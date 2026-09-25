@@ -16,6 +16,12 @@ WebCapture runs entirely on your machine. It listens only on `127.0.0.1`, and no
 - **Standard formats.** Archives are stored as content-addressed blobs with a JSON manifest and a WARC 1.1 file. You can export them as a `.webcapture` file, which another WebCapture can import, or as WACZ for tools such as ReplayWeb.page.
 - **Login-aware capture (optional).** You can register a login session in a dedicated browser window to save pages that need an account. Cookie values are never shown in the UI or written to logs.
 - **Resource-aware.** Capture concurrency adapts to CPU, memory, disk and network load. A low-impact mode is available.
+- **PC and phone layouts.** Optionally save every page a second time with a phone screen width and identity, and switch between the two layouts in the viewer.
+- **Component prefetch and site helpers.** Scripts and styles that a page references but did not load during capture are fetched too. During replay, missing responses for YouTube, X and Shopify are rebuilt from saved page data when the IDs match.
+- **Visual comparison.** The full-page display check screenshots each replayed page and compares it with the screenshot taken while saving, highlighting the areas that differ.
+- **Keep saving over time.** Schedule hourly, daily or weekly re-saves with a difference report, compare earlier saves of the same page side by side, and watch part of a page (a price, a news box) for changes.
+- **Storage management.** Identical resources are shared between archives with hard links, without changing the archive format. An optional storage limit prepares a cleanup plan that removes video from older archives, for you to review before it runs.
+- **Everyday tools.** Batch-save a list of URLs, save capture settings as presets, organize archives with tags, folders and notes, find text in the replayed page, export a page as PNG or PDF, and fix failed captures with one-click retries suited to the cause.
 - **English and Japanese UI**, with light and dark themes.
 
 ## Requirements

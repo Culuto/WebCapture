@@ -6,10 +6,12 @@ import { promisify } from 'node:util';
 import { logEvent } from './logger.mjs';
 import { qualityFromLegacyTitle } from './quality.mjs';
 import { recoverArchiveRepairs, captureJobState } from './repair-transaction.mjs';
+import { fileDigest, peerArchivesFor } from './blob-dedupe.mjs';
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
 const TERMINAL_STATUSES = new Set(['complete', 'complete-with-errors', 'cancelled', 'limit-reached', 'failed', 'blocked', 'login-required']);
+const PRESERVED_ARCHIVE_FIELDS = Object.freeze(['tags', 'folder', 'note', 'prunedAt', 'prunedMediaCount', 'warcRemoved']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'discovering', 'pausing', 'paused', 'warning', 'discovered']);
 
 export function createId(prefix) {
@@ -156,6 +158,33 @@ export class VaultStore {
     this.replayMissSuppressed = new Set();
     this.pendingReplayMisses = new Map();
     this.replayMissFlushTimers = new Map();
+    this.blobSharing = true;
+    this.blobPeerCache = new Map();
+  }
+
+  blobPeers(id) {
+    if (!this.blobSharing) return [];
+    const cached = this.blobPeerCache.get(id);
+    if (cached && Date.now() - cached.at < 60000) return cached.peers;
+    const peers = peerArchivesFor(this, id);
+    this.blobPeerCache.set(id, { at: Date.now(), peers });
+    while (this.blobPeerCache.size > 64) this.blobPeerCache.delete(this.blobPeerCache.keys().next().value);
+    return peers;
+  }
+
+  async linkPeerBlob(id, digest, size, file) {
+    for (const peer of this.blobPeers(id)) {
+      const peerFile = path.join(this.archiveRoot(peer), 'blobs', digest.slice(0, 2), digest);
+      try {
+        const stat = await fs.stat(peerFile);
+        if (stat.size !== size || await fileDigest(peerFile) !== digest) continue;
+        await fs.link(peerFile, file);
+        return true;
+      } catch (error) {
+        if (error.code === 'EEXIST') return true;
+      }
+    }
+    return false;
   }
 
   async init() {
@@ -402,16 +431,53 @@ export class VaultStore {
     });
   }
 
-  queryArchives({ query = '', offset = 0, limit = 60 } = {}) {
+  queryArchives({ query = '', offset = 0, limit = 60, folder = '', tag = '' } = {}) {
     const needle = String(query || '').trim().toLowerCase();
+    const folderFilter = String(folder || '');
+    const tagFilter = String(tag || '');
     const start = Math.max(0, Number(offset) || 0);
     const size = Math.max(1, Math.min(500, Number(limit) || 60));
     const statusText = {
       complete: '完了', 'complete-with-errors': '一部エラー', cancelled: '中止', 'limit-reached': '上限停止',
       failed: '保存失敗', blocked: 'アクセス確認で停止', 'login-required': 'ログインが必要'
     };
-    const filtered = this.listArchives().filter((archive) => !needle || `${archive.title || ''} ${archive.startUrl || ''} ${archive.status || ''} ${statusText[archive.status] || ''} ${archive.quality?.level || ''}`.toLowerCase().includes(needle));
+    const filtered = this.listArchives()
+      .filter((archive) => !folderFilter || (folderFilter === '__none__' ? !archive.folder : archive.folder === folderFilter))
+      .filter((archive) => !tagFilter || (archive.tags || []).includes(tagFilter))
+      .filter((archive) => !needle || `${archive.title || ''} ${archive.startUrl || ''} ${archive.status || ''} ${statusText[archive.status] || ''} ${archive.quality?.level || ''} ${(archive.tags || []).join(' ')} ${archive.folder || ''} ${archive.note || ''}`.toLowerCase().includes(needle));
     return { items: filtered.slice(start, start + size), total: filtered.length, offset: start, limit: size, hasMore: start + size < filtered.length };
+  }
+
+  archiveFacets() {
+    const folders = new Map();
+    const tags = new Map();
+    for (const archive of this.state.archives) {
+      if (archive.folder) folders.set(archive.folder, (folders.get(archive.folder) || 0) + 1);
+      for (const tag of archive.tags || []) tags.set(tag, (tags.get(tag) || 0) + 1);
+    }
+    const sorted = (map) => [...map.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+    return { folders: sorted(folders), tags: sorted(tags), unfiled: this.state.archives.filter((archive) => !archive.folder).length };
+  }
+
+  async updateArchiveMeta(id, input = {}) {
+    const archive = this.getArchive(id);
+    if (!archive) return null;
+    const clean = (value, max) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+    const next = { ...archive };
+    if (input.tags !== undefined) {
+      const list = Array.isArray(input.tags) ? input.tags : String(input.tags || '').split(/[,、]/);
+      next.tags = [...new Set(list.map((tag) => clean(tag, 40)).filter(Boolean))].slice(0, 20);
+      if (!next.tags.length) delete next.tags;
+    }
+    if (input.folder !== undefined) {
+      next.folder = clean(input.folder, 80);
+      if (!next.folder) delete next.folder;
+    }
+    if (input.note !== undefined) {
+      next.note = String(input.note ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 2000);
+      if (!next.note) delete next.note;
+    }
+    return this.addArchive(next, { replaceMeta: true });
   }
 
   revisions() { return { stateRevision: this.meta.stateRevision, archiveRevision: this.meta.archiveRevision }; }
@@ -454,8 +520,12 @@ export class VaultStore {
     return job;
   }
 
-  async addArchive(archive) {
+  async addArchive(archive, { replaceMeta = false } = {}) {
     const index = this.state.archives.findIndex((item) => item.id === archive.id);
+    if (index >= 0 && !replaceMeta) {
+      const previous = this.state.archives[index];
+      for (const key of PRESERVED_ARCHIVE_FIELDS) if (archive[key] === undefined && previous[key] !== undefined) archive = { ...archive, [key]: previous[key] };
+    }
     if (index >= 0) this.state.archives[index] = archive;
     else this.state.archives.push(archive);
     await this.persistArchive(archive);
@@ -673,6 +743,10 @@ export class VaultStore {
     try { await verify(); }
     catch (error) {
       if (error.code !== 'ENOENT') throw error;
+      if (await this.linkPeerBlob(id, digest, buffer.length, file)) {
+        await verify();
+        return { digest: `sha256:${digest}`, file: path.relative(this.archiveRoot(id), file).replaceAll('\\', '/'), size: buffer.length, shared: true };
+      }
       const temp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
       const handle = await fs.open(temp, 'wx');
       try {
@@ -717,8 +791,10 @@ export class VaultStore {
         }
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
-        try { await fs.link(staging, file); }
-        catch (linkError) { if (linkError.code !== 'EEXIST') throw linkError; }
+        if (!await this.linkPeerBlob(id, digest, size, file)) {
+          try { await fs.link(staging, file); }
+          catch (linkError) { if (linkError.code !== 'EEXIST') throw linkError; }
+        }
       }
       return { digest: `sha256:${digest}`, file: path.relative(this.archiveRoot(id), file).replaceAll('\\', '/'), size };
     } finally {
@@ -729,7 +805,7 @@ export class VaultStore {
 
   async writeScreenshot(id, name, body) {
     this.assertArchiveWritable(id);
-    if (!/^\d+\.png$/.test(name)) throw new Error('スクリーンショット名が正しくありません。');
+    if (!/^\d+(?:-mobile)?\.png$/.test(name)) throw new Error('スクリーンショット名が正しくありません。');
     await atomicBuffer(path.join(this.archiveRoot(id), 'screenshots', name), body);
     return `screenshots/${name}`;
   }

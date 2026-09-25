@@ -59,7 +59,8 @@ test('全ページ表示検査は進捗と結果を副記録へ保存し、原ma
     boundaryResources: 0, auxiliaryResources: 0, failedRequests: 0, archivedErrorResponses: 0,
     isolationEvents: 0, runtimeAdvisories: 0, runtimeErrors: 0,
     interactionCandidates: 4, interactionsTested: 4, interactionChanges: 2,
-    interactionErrors: 0, interactionSkipped: 0, interactionTransient: 2, interactionLimitPages: 0
+    interactionErrors: 0, interactionSkipped: 0, interactionTransient: 2, interactionLimitPages: 0,
+    visualCompared: 0, visualMismatchPages: 0, visualAverage: null
   });
   assert.equal(completed.coverage.interactions, true);
   assert.equal(completed.coverage.interactionScope, 'visible-safe-controls');

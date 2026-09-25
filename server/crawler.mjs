@@ -9,6 +9,7 @@ import { captureWithBrowser, createBrowserCaptureSession, findBrowser } from './
 import { LiveViewHub } from './live-view.mjs';
 import { ConcurrencyTuner, OPTIMIZE_START } from './concurrency-tuner.mjs';
 import { buildIssueReport } from './issue-report.mjs';
+import { prefetchScriptReferences } from './script-prefetch.mjs';
 import { assertPublicUrl, classifyScope, isAccountLikeUrl, nextExternalDepth, normalizeUrl, redirectChainExternalDepth, registrableDomain, stableDocumentKey, warningForDepth } from './policy.mjs';
 import { createWarcAsync } from './warc.mjs';
 import { commitArchiveCapture } from './repair-transaction.mjs';
@@ -588,7 +589,7 @@ export class CrawlManager {
     return job;
   }
 
-  async retryArchive(archiveId, { loginProfileId = null, loginHosts = [], skipHosts = [], includeFailed = true } = {}) {
+  async retryArchive(archiveId, { loginProfileId = null, loginHosts = [], skipHosts = [], includeFailed = true, optionOverrides = {}, reason = '' } = {}) {
     if (this.archiveBusy(archiveId)) throw Object.assign(new Error('このアーカイブは保存中または一時停止中です。'), { code: 'ARCHIVE_BUSY', status: 409 });
     const manifest = await this.store.readManifest(archiveId);
     const archive = this.store.getArchive(archiveId);
@@ -599,10 +600,10 @@ export class CrawlManager {
     const queue = retryQueue(plan, { loginHosts, skipHosts, includeFailed });
     if (!queue.length && !plan.missingResourceCount) throw Object.assign(new Error('取り直す対象がありません。'), { code: 'NOTHING_TO_RETRY', status: 409 });
     const source = this.jobsForArchive(archiveId)[0] || null;
-    const options = { ...(source?.options || manifest.options || {}), retryLoginProfileId: wantsLogin ? loginProfileId : null, discoveryMode: 'immediate' };
+    const options = { ...(source?.options || manifest.options || {}), ...optionOverrides, retryLoginProfileId: wantsLogin ? loginProfileId : null, discoveryMode: 'immediate' };
     const job = await this.store.addRetryJob({ archiveId, startUrl: manifest.startUrl, options, queue, sourceJobId: source?.id || null, bytes: archive.bytes });
     await this.store.addArchive({ ...archive, status: 'running' });
-    logEvent('info', 'crawler', 'archive.retry.started', { archiveId, jobId: job.id, pages: queue.length, loginPages: queue.filter((item) => item.login).length, missingResources: plan.missingResourceCount });
+    logEvent('info', 'crawler', 'archive.retry.started', { archiveId, jobId: job.id, reason: reason || 'manual', overrides: Object.keys(optionOverrides), pages: queue.length, loginPages: queue.filter((item) => item.login).length, missingResources: plan.missingResourceCount });
     this.start(job.id);
     return job;
   }
@@ -1252,11 +1253,33 @@ export class CrawlManager {
               if (!capture.fileDocument && capture.engine === 'HTTP' && !/html|xml/i.test(capture.resources?.[0]?.mimeType || 'text/html')) capture.fileDocument = true;
             }
             captureFinished();
+            if (job.options.captureMobile && job.options.captureRendered && browser && !capture.fileDocument && capture.html && capture.engine !== 'HTTP') {
+              live.phase('mobile');
+              try {
+                const mobile = await captureWithBrowser(capture.url || item.normalized, {
+                  ...captureOptionsForScope(job.options, item.current.scope), executable: browser, session: session || undefined, prepareProfile: preparerFor(item),
+                  mobile: true, interactDuringCapture: false, hoverDuringCapture: false,
+                  timeoutMs: Math.min(Number(job.options.requestTimeoutMs) || 30000, 120000), finalizeGraceMs: Math.min(Number(job.options.finalizeGraceMs) || 45000, 60000),
+                  responseMaxBytes: job.options.responseMaxBytes, signal: controller.signal,
+                  diagnosticContext: { jobId: id, archiveId: job.archiveId, depth: item.current.depth, view: 'mobile' }
+                });
+                capture.mobile = { html: mobile.html, title: mobile.title, screenshot: mobile.screenshot, resources: mobile.resources || [], userAgent: mobile.userAgent, viewport: mobile.viewport, partial: Boolean(mobile.partial) };
+              } catch (error) {
+                if (controller.signal.aborted) throw error;
+                capture.blocked ||= [];
+                capture.blocked.push({ url: capture.url || item.normalized, reason: `スマホ表示を保存できません: ${error.message}` });
+                logEvent('warn', 'capture', 'page.mobile.failed', { jobId: id, archiveId: job.archiveId, pageUrl: safeUrl(item.normalized), message: error.message });
+              }
+            }
             live.phase('recovering');
             const recoveryOptions = { ...job.options, signal: controller.signal, knownResourceUrls };
             await recoverMissingSrcsetResources(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
             await recoverEmptyResourceBodies(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
             await recoverReferencedResources(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
+            if (job.options.prefetchScripts !== false && !capture.fileDocument) {
+              live.phase('prefetching');
+              await prefetchScriptReferences(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth }, { fetcher: safeFetch });
+            }
             await completeMediaResources(capture, recoveryOptions, safeFetch, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
             return { ...item, capture };
           }), {
@@ -1390,6 +1413,17 @@ export class CrawlManager {
           if (retryableDocumentStatus(capturedStatus) && !repairPhase) tuner?.onError('capture', `HTTP ${capturedStatus}`);
           if (retryableDocumentStatus(capturedStatus) && scheduleRetry(current, normalized, `HTTP ${capturedStatus}`)) continue;
           manifest.engine ||= capture.engine;
+          if (capture.mobile?.resources?.length) {
+            const desktopKeys = new Set(capture.resources.map((resource) => { try { return normalizeUrl(resource.url); } catch { return resource.url; } }));
+            for (const resource of capture.mobile.resources) {
+              if (resource.type === 'Document' || resource.method === 'POST' || /^(?:data|blob|about):/i.test(String(resource.url || ''))) continue;
+              let key;
+              try { key = normalizeUrl(resource.url); } catch { continue; }
+              if (desktopKeys.has(key) || manifest.resources[key]) continue;
+              desktopKeys.add(key);
+              capture.resources.push({ ...resource, mobileOnly: true });
+            }
+          }
           const pageResources = [];
           const validResourceMap = new Map();
           const postEntries = new Map();
@@ -1510,6 +1544,19 @@ export class CrawlManager {
           if (capture.screenshot) {
             screenshotFile = await this.store.writeScreenshot(job.archiveId, `${String(job.pages + 1).padStart(5, '0')}.png`, capture.screenshot);
           }
+          let mobileEntry = null;
+          if (capture.mobile?.html) {
+            const mobileHtml = Buffer.from(capture.mobile.html);
+            const mobileBlob = await this.store.writeBlob(job.archiveId, mobileHtml);
+            const mobileScreenshot = capture.mobile.screenshot
+              ? await this.store.writeScreenshot(job.archiveId, `${String(job.pages + 1).padStart(5, '0')}-mobile.png`, capture.mobile.screenshot)
+              : null;
+            mobileEntry = {
+              html: mobileBlob.file, screenshot: mobileScreenshot, title: capture.mobile.title || '', userAgent: capture.mobile.userAgent || '',
+              viewport: capture.mobile.viewport || null, capturedAt: new Date().toISOString(), ...(capture.mobile.partial ? { partial: true } : {})
+            };
+            job.bytes += mobileHtml.length + (capture.mobile.screenshot?.length || 0);
+          }
           if (warcChunk.length) {
             batchWarcChunks.push(warcChunk);
           }
@@ -1557,7 +1604,8 @@ export class CrawlManager {
             depth: current.depth, scope: finalScope, externalDepth: effectiveExternalDepth, from: current.from, capturedAt: new Date().toISOString(),
             html: htmlBlob?.file || null, screenshot: screenshotFile, resources: pageResources, links,
             redirects: capture.redirects || [], preservation: capture.preservation || null, blocked: capture.blocked || [], quality: pageQuality,
-            ...(capture.fileDocument ? { file: true, mimeType: capture.resources?.[0]?.mimeType || 'application/octet-stream', size: capture.resources?.[0]?.body?.length || 0 } : {})
+            ...(capture.fileDocument ? { file: true, mimeType: capture.resources?.[0]?.mimeType || 'application/octet-stream', size: capture.resources?.[0]?.body?.length || 0 } : {}),
+            ...(mobileEntry ? { mobile: mobileEntry } : {})
           };
           if (capture.html && !capture.fileDocument) indexedPages.push({ url: finalUrl, title: pageEntry.title, html: capture.html });
           sharedIndexPages.push({ url: finalUrl, requestedUrl: normalized, capturedAt: pageEntry.capturedAt });

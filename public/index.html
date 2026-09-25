@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/assets.css">
   <link rel="stylesheet" href="/layout.css">
   <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/features.css">
 </head>
 <body>
   <header class="topbar">
@@ -25,6 +26,12 @@
       <button id="settings-tab" class="tab" role="tab" aria-selected="false" aria-controls="settings-view" tabindex="-1" type="button" data-view-target="settings"><span class="tab-icon" data-icon="settings" aria-hidden="true"></span><span>設定</span></button>
     </nav>
     <div id="connection-state" class="connection-state" role="status" aria-live="polite" hidden><span class="status-dot"></span><span>サーバーに接続できません（再接続を試しています）</span></div>
+    <div class="notification-anchor"><button id="notifications-button" class="icon-only notification-button" type="button" aria-label="お知らせ" aria-haspopup="true" aria-expanded="false" aria-controls="notifications-panel" data-tooltip="お知らせ"><span data-icon="bell" aria-hidden="true"></span><span id="notifications-count" class="notification-count" hidden>0</span></button>
+      <section id="notifications-panel" class="notifications-panel" aria-labelledby="notifications-title" hidden>
+        <div class="section-heading"><h2 id="notifications-title">お知らせ</h2><div class="actions"><button id="notifications-read" class="secondary" type="button">すべて既読にする</button><button id="notifications-close" class="secondary icon-only" type="button" aria-label="お知らせを閉じる" data-tooltip="閉じる"><span data-icon="x" aria-hidden="true"></span></button></div></div>
+        <ul id="notifications-list" class="notifications-list"><li class="muted">お知らせはありません。</li></ul>
+      </section>
+    </div>
     <div class="local-state"><span class="status-dot safe"></span>ローカルのみ</div>
   </header>
 
@@ -39,6 +46,7 @@
             <label class="visually-hidden" for="capture-url">保存するURL</label>
             <input id="capture-url" name="url" type="url" required autocomplete="url" placeholder="https://example.com" aria-describedby="capture-url-error">
             <button class="primary icon-with-label capture-submit" type="submit" data-tooltip="保存を開始"><span class="button-icon" data-icon="download" aria-hidden="true"></span><span>保存を開始</span></button>
+            <button id="batch-open" class="secondary icon-with-label" type="button" data-tooltip="複数のURLを順番に保存"><span data-icon="list-plus" aria-hidden="true"></span><span>まとめて保存</span></button>
           </div>
           <p id="capture-url-error" class="field-error" role="alert" hidden></p>
           <div class="capture-quick">
@@ -58,6 +66,10 @@
             <div class="quick-field login-choice-field">
               <div class="label-with-help"><label for="login-profile">ログイン</label><button class="help-button" type="button" data-help="ログインが必要なページを保存するときに、設定タブで登録したログイン状態を選びます。使わないを選ぶとログインせずに保存します。ログイン状態で保存したアーカイブには印が付きます。" aria-label="ログインの説明">?</button></div>
               <select id="login-profile"><option value="">使わない</option></select>
+            </div>
+            <div class="quick-field preset-field">
+              <div class="label-with-help"><label for="preset-select">プリセット</label><button class="help-button" type="button" data-help="よく使う保存設定に名前を付けて保存し、選ぶだけで呼び出せます。「重いサイト用」「動画なし」などは最初から用意されています。呼び出すと、保存画面の設定（詳細設定を含む）がその内容に切り替わります。" aria-label="プリセットの説明">?</button></div>
+              <div class="preset-controls"><select id="preset-select"><option value="">選んで呼び出す</option></select><button id="preset-save" class="secondary icon-only" type="button" aria-label="今の設定をプリセットとして保存" data-tooltip="今の設定を保存"><span data-icon="save" aria-hidden="true"></span></button><button id="preset-delete" class="secondary danger icon-only" type="button" aria-label="選んだプリセットを削除" data-tooltip="プリセットを削除" disabled><span data-icon="trash" aria-hidden="true"></span></button></div>
             </div>
             <div id="optimize-result" class="optimize-result" hidden><span id="optimize-result-text"></span><button id="apply-optimized" class="secondary" type="button">この値を使う</button></div>
           </div>
@@ -79,6 +91,11 @@
                 <div class="label-with-help"><label for="media-speed">動画・音声の保存の速さ</label><button class="help-button" type="button" data-help="後回しのときの速さ。ゆっくりは1本ずつ帯域を抑えて取り、パソコンと相手サイトへの負担を小さくします。普通は2本、速いは4本を同時に取ります。" aria-label="動画・音声の保存の速さの説明">?</button></div><div class="select-field"><select id="media-speed"><option value="slow">ゆっくり（低負荷）</option><option value="normal" selected>普通</option><option value="fast">速い</option></select></div>
                 <div class="label-with-help"><label for="interaction-limit">ページ内の操作の確認回数</label><button class="help-button" type="button" data-help="1ページで試すボタン・タブ・開閉などの回数の上限。多いほど隠れた内容まで保存できるが時間がかかります。無制限でも1ページの保存時間の上限は守ります。" aria-label="操作の確認回数の説明">?</button></div><div class="select-field"><select id="interaction-limit"><option value="50">50回</option><option value="100">100回</option><option value="250">250回</option><option value="500">500回</option><option value="1000" selected>1000回</option><option value="unlimited">無制限</option></select></div>
                 <div class="label-with-help"><label for="interaction-mode">操作の確認の仕方</label><button class="help-button" type="button" data-help="代表的なものだけでは、同じ形のボタンがたくさん並ぶ場合（動画一覧のメニューなど）に各形から2つだけ試します。時間を短くしつつ、ほかの種類の操作まで確かめられます。" aria-label="操作の確認の仕方の説明">?</button></div><div class="select-field"><select id="interaction-mode"><option value="all" selected>すべて試す</option><option value="representative">代表的なものだけ試す</option></select></div>
+              </div>
+              <div class="check-list option-help-list fidelity-options">
+                <div><label><input id="save-media" type="checkbox" checked><span>動画・音声を保存する</span></label><button class="help-button" type="button" data-help="OFFにすると、動画・音声のファイルと配信の分割ファイルを保存しません。容量と時間を大きく減らせます。ページや画像は通常どおり保存します。" aria-label="動画・音声の保存の説明">?</button></div>
+                <div><label><input id="capture-mobile" type="checkbox"><span>PC表示とスマホ表示の両方を保存</span></label><button class="help-button" type="button" data-help="ONにすると、各ページをスマホの画面幅と名乗りでもう一度開き、スマホ用のレイアウトも保存します。再生画面の「PC／スマホ」ボタンで切り替えて見られます。1ページあたりの保存時間が長くなります。" aria-label="スマホ表示の保存の説明">?</button></div>
+                <div><label><input id="prefetch-scripts" type="checkbox" checked><span>読み込まれなかった部品も先取り保存</span></label><button class="help-button" type="button" data-help="保存したスクリプトやページの中に書かれていて、保存時には読み込まれなかった同じサイトの部品（スクリプト・スタイル）を探して追加で保存します。再生時に後から読み込まれる上部バーやメニューなどが表示されやすくなります。" aria-label="部品の先取り保存の説明">?</button></div>
               </div>
               <details id="advanced-capture-settings" class="advanced-settings">
                 <summary><span class="summary-title"><span class="summary-toggle-icon" data-icon="chevron-down" aria-hidden="true"></span><span>負荷とアクセスの仕方</span></span><span class="summary-note">速さ・相手サイトへの負担</span></summary>
@@ -148,6 +165,10 @@
         </section>
         </div>
         <div class="save-side">
+        <section id="batch-region" class="card batch-card" aria-labelledby="batch-title" hidden>
+          <div class="section-heading"><h2 id="batch-title">まとめて保存</h2><span id="batch-summary" class="muted" role="status" aria-live="polite"></span></div>
+          <ul id="batch-list" class="batch-list"></ul>
+        </section>
         <section id="paused-jobs-region" class="card paused-card" aria-labelledby="paused-title" hidden>
           <details class="paused-details">
             <summary><span class="summary-toggle-icon" data-icon="chevron-down" aria-hidden="true"></span><h2 id="paused-title">中断中の保存</h2><span id="paused-jobs-count" class="muted"></span></summary>
@@ -186,6 +207,7 @@
         <div class="archive-picker">
           <div class="rail-heading archive-picker-heading"><div><h1>保存済みサイト</h1><span id="archive-picker-count" class="muted" role="status" aria-live="polite"></span></div><button id="import-archive" class="secondary icon-only" type="button" aria-label="書き出したファイルを読み込む" data-tooltip="ファイルを読み込む"><span data-icon="upload" aria-hidden="true"></span></button><input id="import-file" type="file" accept=".webcapture,.sitevault" hidden><button id="refresh-archives" class="secondary icon-only" type="button" aria-label="一覧を更新" data-tooltip="一覧を更新"><span data-icon="refresh" aria-hidden="true"></span></button></div>
           <div class="archive-filter-field"><label class="visually-hidden" for="archive-filter">アーカイブを検索</label><input id="archive-filter" type="search" placeholder="サイトを検索" autocomplete="off"></div>
+          <div class="archive-facet-filters"><label class="visually-hidden" for="archive-folder-filter">フォルダで絞り込む</label><select id="archive-folder-filter"><option value="">すべてのフォルダ</option></select><label class="visually-hidden" for="archive-tag-filter">タグで絞り込む</label><select id="archive-tag-filter"><option value="">すべてのタグ</option></select></div>
           <form id="fulltext-form" class="fulltext-form" role="search"><label class="visually-hidden" for="fulltext-query">保存したページの本文を検索</label><input id="fulltext-query" type="search" placeholder="ページの本文を検索" autocomplete="off"><button class="help-button" type="button" data-help="保存したすべてのサイトのページから、本文とページ名に言葉が含まれるものを探します。空白で区切ると、すべての言葉を含むページだけを出します。結果を押すとそのページを開きます。" aria-label="本文検索の説明">?</button></form>
           <div id="fulltext-results" class="fulltext-results" hidden><p id="fulltext-summary" class="muted"></p><ul id="fulltext-list"></ul></div>
           <div id="archive-picker-list" class="archive-picker-list"><p class="empty-row">保存済みサイトはまだありません。</p></div>
@@ -202,8 +224,12 @@
           <div class="archive-address"><span id="replay-address">ページ未選択</span></div>
           <button id="replay-light" class="icon-only" type="button" aria-label="軽量表示" data-tooltip="軽量表示（スクリプトと動きを止める）" aria-pressed="false" disabled><span data-icon="zap-off" aria-hidden="true"></span></button>
           <button id="replay-size" class="icon-only" type="button" aria-label="保存時の画面サイズで表示" data-tooltip="保存時の画面サイズで表示" aria-pressed="false" disabled><span data-icon="maximize" aria-hidden="true"></span></button>
+          <button id="replay-find-toggle" class="icon-only" type="button" aria-label="ページ内を検索" data-tooltip="ページ内を検索" aria-pressed="false" aria-controls="replay-find-bar" disabled><span data-icon="search" aria-hidden="true"></span></button>
+          <button id="replay-view-toggle" class="icon-only" type="button" aria-label="スマホ表示に切り替え" data-tooltip="スマホ表示に切り替え" aria-pressed="false" disabled><span data-icon="smartphone" aria-hidden="true"></span></button>
+          <button id="replay-history" class="icon-only" type="button" aria-label="日付で見比べる" data-tooltip="このページの過去の保存と見比べる" disabled><span data-icon="calendar-clock" aria-hidden="true"></span></button>
           <button id="delete-archive" class="secondary danger icon-only" type="button" aria-label="アーカイブを削除" data-tooltip="アーカイブを削除" disabled><span data-icon="trash" aria-hidden="true"></span></button>
         </div>
+        <form id="replay-find-bar" class="replay-find-bar" role="search" hidden><label class="visually-hidden" for="replay-find-input">表示中のページ内で探す文字</label><input id="replay-find-input" type="search" placeholder="表示中のページ内を検索" autocomplete="off"><span id="replay-find-count" class="muted" role="status" aria-live="polite"></span><button id="replay-find-prev" class="secondary icon-only" type="button" aria-label="前の一致へ" data-tooltip="前へ"><span data-icon="chevron-up" aria-hidden="true"></span></button><button id="replay-find-next" class="secondary icon-only" type="submit" aria-label="次の一致へ" data-tooltip="次へ"><span data-icon="chevron-down" aria-hidden="true"></span></button><button id="replay-find-close" class="secondary icon-only" type="button" aria-label="ページ内検索を閉じる" data-tooltip="閉じる"><span data-icon="x" aria-hidden="true"></span></button></form>
         <p id="repair-recovery-warning" class="capture-caution" role="status" hidden></p>
         <div id="replay-heavy-notice" class="replay-notice" role="status" hidden><span id="replay-heavy-text"></span><div class="actions"><button id="replay-heavy-light" class="primary icon-with-label" type="button"><span data-icon="zap-off" aria-hidden="true"></span><span>軽量表示に切り替え</span></button><button id="replay-heavy-dismiss" class="secondary icon-only" type="button" aria-label="通知を閉じる" data-tooltip="閉じる"><span data-icon="x" aria-hidden="true"></span></button></div></div>
         <div class="replay-frame-shell"><iframe id="replay-frame" title="保存済みサイトの再生" aria-busy="false" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" scrolling="yes"></iframe></div>
@@ -225,7 +251,39 @@
             <button id="resave-archive" class="secondary icon-with-label" type="button" disabled><span data-icon="git-compare" aria-hidden="true"></span><span>再保存して前回と比べる</span></button>
           </div>
           <div class="export-row"><label class="visually-hidden" for="export-format">書き出し形式</label><select id="export-format"><option value="webcapture">WebCapture形式（別PCのWebCaptureで開く）</option><option value="wacz">WACZ形式（一般の閲覧ツールで開く）</option></select><button id="export-archive" class="secondary icon-with-label" type="button" disabled><span data-icon="file-down" aria-hidden="true"></span><span>書き出す</span></button></div>
+          <div class="export-row"><label class="visually-hidden" for="page-export-format">表示中のページの書き出し形式</label><select id="page-export-format"><option value="png">画像（PNG）</option><option value="pdf">PDF</option></select><button id="page-export" class="secondary icon-with-label" type="button" disabled><span data-icon="image" aria-hidden="true"></span><span>ページを書き出す</span></button></div>
         </section>
+        <details id="organize-card" class="detail-section organize-card">
+          <summary><span class="summary-toggle-icon" data-icon="chevron-down" aria-hidden="true"></span><span>整理（タグ・フォルダ・メモ）</span></summary>
+          <form id="organize-form" class="organize-form">
+            <label class="login-field"><span>タグ（読点かカンマで区切ります）</span><input id="archive-tags" type="text" maxlength="400" placeholder="例: 仕事, 参考"></label>
+            <label class="login-field"><span>フォルダ</span><input id="archive-folder" type="text" maxlength="80" list="archive-folder-options" placeholder="例: 調査資料"></label>
+            <datalist id="archive-folder-options"></datalist>
+            <label class="login-field"><span>メモ</span><textarea id="archive-note" rows="3" maxlength="2000"></textarea></label>
+            <button id="archive-meta-save" class="secondary icon-with-label" type="submit" disabled><span data-icon="save" aria-hidden="true"></span><span>整理の内容を保存</span></button>
+          </form>
+        </details>
+        <details id="schedule-card" class="detail-section schedule-card">
+          <summary><span class="summary-toggle-icon" data-icon="chevron-down" aria-hidden="true"></span><span>定期保存</span></summary>
+          <p class="muted">アプリを起動している間、決めた間隔で同じ設定のまま自動で保存し直し、前回との違いをお知らせで知らせます。止まっていた間の予定は、次に起動したときに1回だけ実行します。</p>
+          <form id="schedule-form" class="schedule-form">
+            <label class="login-field"><span>間隔</span><select id="schedule-frequency"><option value="">定期保存しない</option><option value="hourly">毎時</option><option value="daily">毎日</option><option value="weekly">毎週</option></select></label>
+            <label id="schedule-weekday-field" class="login-field" hidden><span>曜日</span><select id="schedule-weekday"><option value="0">日曜日</option><option value="1">月曜日</option><option value="2">火曜日</option><option value="3">水曜日</option><option value="4">木曜日</option><option value="5">金曜日</option><option value="6">土曜日</option></select></label>
+            <label id="schedule-time-field" class="login-field" hidden><span>時刻</span><input id="schedule-time" type="time" value="03:00"></label>
+            <button id="schedule-save" class="secondary icon-with-label" type="submit" disabled><span data-icon="calendar-clock" aria-hidden="true"></span><span>定期保存を設定</span></button>
+          </form>
+          <p id="schedule-status" class="muted" role="status" aria-live="polite"></p>
+        </details>
+        <details id="visual-card" class="detail-section visual-card">
+          <summary><span class="summary-toggle-icon" data-icon="chevron-down" aria-hidden="true"></span><span>見た目の比較</span></summary>
+          <p id="visual-status" class="muted" role="status" aria-live="polite">全ページ表示検査を行うと、保存時の画面と再生画面を自動で比べます。</p>
+          <ul id="visual-list" class="visual-list"></ul>
+          <div id="visual-viewer" class="visual-viewer" hidden>
+            <div class="visual-toolbar"><span id="visual-page-title" class="muted"></span><div class="actions"><button id="visual-show-saved" class="secondary" type="button" aria-pressed="true">保存時の画面</button><button id="visual-show-replay" class="secondary" type="button" aria-pressed="false">再生画面</button></div></div>
+            <p class="muted">赤く塗った区画が、保存時と再生で見た目が違う場所です。</p>
+            <div class="visual-canvas-shell"><canvas id="visual-canvas" aria-label="見た目の違いを強調した画面"></canvas></div>
+          </div>
+        </details>
         <section id="diff-card" class="detail-section diff-card" aria-labelledby="diff-title" hidden>
           <h2 id="diff-title">前回との違い</h2>
           <p id="diff-summary" class="muted" role="status"></p>
@@ -292,12 +350,44 @@
         <div><h2>レガシー機能</h2><div><p>以前の「同一サイト扱いキーワード」を保存画面に表示します。通常は同じドメインのサイトを自動で同じサイトとして扱うため不要。ONのときだけ、指定したキーワードが保存に使われます。</p><label class="switch"><input id="legacy-keywords" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span><span id="legacy-keywords-state" class="switch-text">OFF</span></label></div></div>
         <div><h2>診断ログ</h2><div><p>画面表示、ボタン操作、保存段階、素材の成否をローカルJSONLへ記録します。入力値、Cookie、認証情報、本文、個人情報を含むURL部分は記録しません。</p><button id="show-diagnostics" class="secondary icon-with-label" type="button" aria-controls="diagnostic-output" aria-expanded="false"><span data-icon="list" aria-hidden="true"></span><span>最新ログを表示</span></button><pre id="diagnostic-output" class="diagnostic-output" tabindex="0" hidden></pre></div></div>
         <div><h2>端末の負荷記録</h2><div><p id="metrics-recording-status">CPU・メモリ・ディスク・通信・GPUを5秒ごとに数値だけ記録します。記録は7日後に自動削除します。</p><button id="show-metrics" class="secondary icon-with-label" type="button" aria-controls="metrics-output" aria-expanded="false"><span data-icon="activity" aria-hidden="true"></span><span>負荷履歴を表示</span></button><pre id="metrics-output" class="diagnostic-output" tabindex="0" hidden></pre></div></div>
+        <div><h2>変化の見張り</h2><div>
+          <p>指定したページの一部分（価格・お知らせ欄など）を決めた間隔で開いて確かめ、文字が変わったらお知らせで知らせます。部分はCSSセレクタ（例: .price、#news）で指定します。空欄にするとページ全体の文字を見張ります。アプリを起動している間だけ確認します。</p>
+          <form id="watch-form" class="login-form">
+            <label class="login-field"><span>ページのURL</span><input id="watch-url" type="url" placeholder="https://example.com/news" required></label>
+            <label class="login-field"><span>見張る部分（空欄ならページ全体）</span><input id="watch-selector" type="text" maxlength="300" spellcheck="false" placeholder="例: .price"></label>
+            <label class="login-field"><span>名前（任意）</span><input id="watch-label" type="text" maxlength="100" placeholder="例: 商品の価格"></label>
+            <label class="login-field"><span>確認の間隔</span><select id="watch-interval"><option value="15">15分ごと</option><option value="60">1時間ごと</option><option value="180">3時間ごと</option><option value="360">6時間ごと</option><option value="720">12時間ごと</option><option value="1440" selected>1日ごと</option><option value="10080">1週間ごと</option></select></label>
+            <button id="watch-add" class="primary" type="submit">見張りを追加</button>
+          </form>
+          <ul id="watch-list" class="login-list watch-list"><li class="muted">見張りはまだありません。</li></ul>
+        </div></div>
+        <div><h2>定期保存の予定</h2><div>
+          <p>アーカイブ画面の「定期保存」で設定した予定の一覧です。</p>
+          <ul id="schedule-list" class="login-list"><li class="muted">定期保存の予定はありません。</li></ul>
+        </div></div>
+        <div><h2>保存データの共有化</h2><div>
+          <p>アーカイブをまたいで同じ内容の画像・動画・スクリプトを1つの実体にまとめ、ディスク容量を減らします。ファイルの場所や名前は変えないため、どのアーカイブも今までどおり開けます。新しく保存した素材は、同じサイトの前回の保存と自動でまとめます。</p>
+          <button id="dedupe-start" class="secondary icon-with-label" type="button"><span data-icon="layout-grid" aria-hidden="true"></span><span>既存の保存データをまとめる</span></button>
+          <p id="dedupe-status" class="muted" role="status" aria-live="polite"></p>
+        </div></div>
+        <div><h2>容量の自動整理</h2><div>
+          <p>保存データの合計が上限を超えたら、古いアーカイブの動画・音声を消す整理案を作ってお知らせします。実行する前に一覧で確認できます。各サイトの一番新しいアーカイブは対象にしません。消した動画・音声は「未保存の動画・ファイル」に戻り、元サイトが残っていれば後から取り直せます。</p>
+          <div class="settings-inline">
+            <label class="switch"><input id="cleanup-enabled" type="checkbox" role="switch"><span class="switch-track" aria-hidden="true"></span><span id="cleanup-enabled-state" class="switch-text">OFF</span></label>
+            <label class="login-field"><span>上限（GB）</span><input id="cleanup-limit" type="number" min="1" max="100000" step="1" value="100"></label>
+          </div>
+          <label class="modal-check"><input id="cleanup-include-warc" type="checkbox"><span>古いアーカイブの通信記録（WARC）も消す</span></label>
+          <div class="actions settings-actions"><button id="cleanup-save" class="secondary" type="button">設定を保存</button><button id="cleanup-plan" class="secondary icon-with-label" type="button"><span data-icon="scan-search" aria-hidden="true"></span><span>整理案を作る</span></button></div>
+          <p id="cleanup-status" class="muted" role="status" aria-live="polite"></p>
+          <ul id="cleanup-plan-list" class="login-list cleanup-plan-list" hidden></ul>
+          <button id="cleanup-execute" class="primary" type="button" hidden>選んだアーカイブを整理する</button>
+        </div></div>
         <div><h2>使用技術</h2><div><p>Node.js、Chrome / Edge DevTools Protocol、WARC 1.1、tldts（ドメイン判定、MIT License）、Lucide（操作アイコン、ISC License）を使用します。</p></div></div>
       </div>
     </section>
   </main>
 
-  <footer class="statusbar"><span id="footer-storage">保存先: WebCapture/data/archives</span><span id="footer-browser">ブラウザ確認中</span><span>v4.0.0</span></footer>
+  <footer class="statusbar"><span id="footer-storage">保存先: WebCapture/data/archives</span><span id="footer-browser">ブラウザ確認中</span><span>v4.1.0</span></footer>
 
   <div id="warning-modal" class="modal-backdrop" hidden>
     <section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="warning-title" aria-describedby="warning-copy">
@@ -336,6 +426,33 @@
         <div class="section-heading"><h2 id="diff-modal-title">ページの違い</h2><button id="diff-modal-close" class="secondary icon-only" type="button" aria-label="閉じる" data-tooltip="閉じる"><span data-icon="x" aria-hidden="true"></span></button></div>
         <p id="diff-modal-url" class="muted"></p>
         <ol id="diff-modal-lines" class="diff-lines"></ol>
+      </div>
+    </section>
+  </div>
+  <div id="batch-modal" class="modal-backdrop" hidden>
+    <section class="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="batch-modal-title">
+      <span class="modal-symbol" data-icon="list-plus" aria-hidden="true"></span>
+      <div>
+        <h2 id="batch-modal-title">まとめて保存</h2>
+        <p>保存したいURLを1行に1つずつ貼り付けるか、URLを書いたテキストファイルを読み込みます。今の保存画面の設定のまま、上から順に1件ずつ保存します（最大500件）。</p>
+        <label class="login-field"><span>URLの一覧</span><textarea id="batch-urls" rows="8" spellcheck="false" placeholder="https://example.com&#10;https://example.org/page"></textarea></label>
+        <div class="batch-file-row"><input id="batch-file" type="file" accept=".txt,.csv,text/plain,text/csv" hidden><button id="batch-file-choose" class="secondary icon-with-label" type="button"><span data-icon="upload" aria-hidden="true"></span><span>テキストファイルを読み込む</span></button><span id="batch-count" class="muted" role="status" aria-live="polite"></span></div>
+        <div class="modal-actions"><button id="batch-cancel" class="secondary icon-with-label" type="button"><span data-icon="x" aria-hidden="true"></span><span>キャンセル</span></button><button id="batch-start" class="primary icon-with-label" type="button"><span data-icon="play" aria-hidden="true"></span><span>順番に保存を開始</span></button></div>
+      </div>
+    </section>
+  </div>
+  <div id="history-modal" class="modal-backdrop" hidden>
+    <section class="modal wide-modal history-modal" role="dialog" aria-modal="true" aria-labelledby="history-modal-title">
+      <div class="history-body">
+        <div class="section-heading"><h2 id="history-modal-title">日付で見比べる</h2><button id="history-close" class="secondary icon-only" type="button" aria-label="閉じる" data-tooltip="閉じる"><span data-icon="x" aria-hidden="true"></span></button></div>
+        <p id="history-url" class="muted"></p>
+        <div class="history-controls">
+          <label class="login-field"><span>左に表示する日付</span><select id="history-left"></select></label>
+          <label class="login-field"><span>右に表示する日付</span><select id="history-right"></select></label>
+          <button id="history-open" class="secondary icon-with-label" type="button"><span data-icon="archive" aria-hidden="true"></span><span>左の日付のアーカイブを開く</span></button>
+        </div>
+        <p id="history-status" class="muted" role="status" aria-live="polite"></p>
+        <div class="history-frames"><iframe id="history-frame-left" title="左の日付の保存ページ" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe><iframe id="history-frame-right" title="右の日付の保存ページ" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe></div>
       </div>
     </section>
   </div>

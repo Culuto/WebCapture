@@ -29,6 +29,15 @@ import TriangleAlert from '/vendor/lucide/icons/triangle-alert.mjs';
 import Upload from '/vendor/lucide/icons/upload.mjs';
 import X from '/vendor/lucide/icons/x.mjs';
 import ZapOff from '/vendor/lucide/icons/zap-off.mjs';
+import Bell from '/vendor/lucide/icons/bell.mjs';
+import Search from '/vendor/lucide/icons/search.mjs';
+import ChevronUp from '/vendor/lucide/icons/chevron-up.mjs';
+import Smartphone from '/vendor/lucide/icons/smartphone.mjs';
+import Monitor from '/vendor/lucide/icons/monitor.mjs';
+import CalendarClock from '/vendor/lucide/icons/calendar-clock.mjs';
+import ListPlus from '/vendor/lucide/icons/list-plus.mjs';
+import ImageIcon from '/vendor/lucide/icons/image.mjs';
+import Save from '/vendor/lucide/icons/save.mjs';
 
 const ICONS = Object.freeze({
   activity: Activity,
@@ -60,7 +69,16 @@ const ICONS = Object.freeze({
   'triangle-alert': TriangleAlert,
   upload: Upload,
   x: X,
-  'zap-off': ZapOff
+  'zap-off': ZapOff,
+  'bell': Bell,
+  'search': Search,
+  'chevron-up': ChevronUp,
+  'smartphone': Smartphone,
+  'monitor': Monitor,
+  'calendar-clock': CalendarClock,
+  'list-plus': ListPlus,
+  'image': ImageIcon,
+  'save': Save
 });
 
 export function setIcon(target, name) {

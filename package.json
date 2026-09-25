@@ -1,6 +1,6 @@
 {
   "name": "webcapture",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Save websites you are allowed to archive and replay them offline in an isolated viewer.",
   "license": "Apache-2.0",
   "private": true,

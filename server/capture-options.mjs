@@ -127,6 +127,8 @@ export function sanitizeCaptureOptions(input = {}, defaults = DEFAULT_CAPTURE_OP
     externalDetail: ['full', 'standard', 'light'].includes(input.externalDetail) ? input.externalDetail : 'full',
     repairBeforeComplete: boolean(input.repairBeforeComplete, true),
     sharePages: boolean(input.sharePages, true),
+    captureMobile: boolean(input.captureMobile, false),
+    prefetchScripts: boolean(input.prefetchScripts, true),
     loginProfileId: typeof input.loginProfileId === 'string' && /^login_[a-z0-9_]+$/i.test(input.loginProfileId) ? input.loginProfileId : null,
     perHostConcurrency: unlimited(input.perHostConcurrency) ? 0 : integer(input.perHostConcurrency, defaults.perHostConcurrency ?? 2, 0, 30),
     perHostIntervalMs: integer(input.perHostIntervalMs, defaults.perHostIntervalMs ?? 1000, 0, 60000),

@@ -367,12 +367,16 @@ export async function captureWithBrowser(url, options = {}) {
     await Promise.all([
       client.send('Page.enable'), client.send('Runtime.enable'), client.send('Network.enable', networkParams),
       client.send('Network.setCacheDisabled', { cacheDisabled: options.disableBrowserCache !== false }),
-      client.send('Emulation.setDeviceMetricsOverride', {
+      client.send('Emulation.setDeviceMetricsOverride', options.mobile ? {
+        width: MOBILE_CAPTURE_VIEWPORT.width, height: MOBILE_CAPTURE_VIEWPORT.height,
+        deviceScaleFactor: MOBILE_CAPTURE_VIEWPORT.deviceScaleFactor, mobile: true
+      } : {
         width: options.viewportWidth || 1440, height: options.viewportHeight || 1000,
         deviceScaleFactor: options.deviceScaleFactor || 1, mobile: false
       }),
+      options.mobile ? client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }).catch(() => {}) : null,
       client.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }),
-      session.userAgent ? client.send('Network.setUserAgentOverride', userAgentOverride(session)) : null,
+      session.userAgent || options.mobile ? client.send('Network.setUserAgentOverride', userAgentOverride(session, options.mobile)) : null,
       client.send('WebAuthn.enable', { enableUI: false }).catch(() => {})
     ]);
     live = startLiveScreencast(client, options.liveView);
@@ -480,7 +484,7 @@ export async function captureWithBrowser(url, options = {}) {
             client.send('Network.enable', networkParams, 30000, sessionId),
             client.send('Network.setCacheDisabled', { cacheDisabled: options.disableBrowserCache !== false }, 30000, sessionId),
             kind === 'iframe' ? client.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, 30000, sessionId) : null,
-            session.userAgent ? client.send('Network.setUserAgentOverride', userAgentOverride(session), 30000, sessionId).catch(() => {}) : null,
+            session.userAgent || options.mobile ? client.send('Network.setUserAgentOverride', userAgentOverride(session, options.mobile), 30000, sessionId).catch(() => {}) : null,
             kind === 'iframe' ? client.send('Page.enable', {}, 30000, sessionId) : null,
             kind === 'iframe' ? client.send('Page.addScriptToEvaluateOnNewDocument', { source: WEBAUTHN_GUARD_SOURCE }, 30000, sessionId).catch(() => {}) : null,
             kind === 'iframe' ? client.send('WebAuthn.enable', { enableUI: false }, 30000, sessionId).catch(() => {}) : null,
@@ -795,7 +799,8 @@ export async function captureWithBrowser(url, options = {}) {
     }
     return {
       ...state, resources, redirects, preservation, blocked, partial: timedOut,
-      screenshot: screenshot ? Buffer.from(screenshot.data, 'base64') : null, engine: path.basename(executable)
+      screenshot: screenshot ? Buffer.from(screenshot.data, 'base64') : null, engine: path.basename(executable),
+      ...(options.mobile ? { userAgent: mobileBrowserIdentity(session).userAgent, viewport: { ...MOBILE_CAPTURE_VIEWPORT } } : {})
     };
   } finally {
     clearTimeout(hardTimeout);
@@ -826,7 +831,23 @@ export function regularBrowserIdentity(version, executable = '') {
   };
 }
 
-function userAgentOverride(session) {
+export const MOBILE_CAPTURE_VIEWPORT = Object.freeze({ width: 390, height: 844, deviceScaleFactor: 2 });
+
+export function mobileBrowserIdentity(session = {}) {
+  const base = String(session.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36');
+  const userAgent = base.replace(/\([^)]*\)/, '(Linux; Android 10; K)').replace(/ Edg\/[\d.]+/, '').replace(/(Chrome\/[\d.]+) (?:Mobile )?Safari/, '$1 Mobile Safari');
+  const metadata = session.userAgentMetadata || {};
+  return {
+    userAgent,
+    userAgentMetadata: { ...metadata, platform: 'Android', platformVersion: '10.0.0', architecture: '', model: 'K', mobile: true, bitness: '', wow64: false }
+  };
+}
+
+function userAgentOverride(session, mobile = false) {
+  if (mobile) {
+    const identity = mobileBrowserIdentity(session);
+    return { userAgent: identity.userAgent, acceptLanguage: 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7', platform: 'Linux armv8l', userAgentMetadata: identity.userAgentMetadata };
+  }
   return { userAgent: session.userAgent, acceptLanguage: 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7', platform: 'Win32', userAgentMetadata: session.userAgentMetadata };
 }
 

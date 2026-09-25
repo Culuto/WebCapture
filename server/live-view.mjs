@@ -11,6 +11,8 @@ const PHASE_LABELS = Object.freeze({
   interacting: 'ボタンやメニューを確認中',
   reading: '素材を記録中',
   recovering: '足りない素材を補完中',
+  mobile: 'スマホ表示を保存中',
+  prefetching: '読み込まれなかった部品を先取り保存中',
   http: 'HTTPで取得中（画面なし）',
   file: 'ファイルとして保存中（画面なし）',
   done: '保存完了',
