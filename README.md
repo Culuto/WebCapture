@@ -39,7 +39,13 @@ npm start
 
 Then open <http://127.0.0.1:43193/> in your browser. Enter a URL, choose the scope, and press **Start saving**. Saved sites appear on the **Archives** tab.
 
+On Windows you can also double-click `AppDetail/Appboot_WebCapture.vbs`. It installs the dependencies on first run, then starts the server and opens WebCapture in its own app window. `AppDetail/Appstop_WebCapture.vbs` stops it again.
+
 Archives, login sessions and logs are stored inside the project folder, under `data/` and `runtime/`. They are excluded from Git.
+
+### Moving to another computer
+
+Clone or download this repository on the other computer and start it as described above. Your saved sites are not part of the repository. To bring them along, open a site on the **Archives** tab, export it as a `.webcapture` file, and import that file on the other computer. Login sessions are never exported, so register them again on the new machine if you need them.
 
 ## Configuration
 

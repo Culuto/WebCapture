@@ -17,6 +17,8 @@ for (const file of await collect(root)) {
   const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`${path.relative(root, file)}: ${result.stderr || result.stdout}`);
 }
+const sync = spawnSync(process.execPath, [path.join(root, 'scripts', 'sync-appdetail.mjs')], { encoding: 'utf8' });
+if (sync.status !== 0) throw new Error(sync.stderr || sync.stdout);
 const appDetail = spawnSync(process.execPath, [path.join(root, 'scripts', 'check-appdetail.mjs')], { encoding: 'utf8' });
 if (appDetail.status !== 0) throw new Error(appDetail.stderr || appDetail.stdout);
 console.log('Static check passed');

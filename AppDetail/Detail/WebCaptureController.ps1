@@ -23,6 +23,11 @@ function Test-AppReady {
 function Start-AppServer {
   if (Test-AppReady) { return }
   if (Test-Path -LiteralPath $pidFile) { Stop-AppServer }
+  if (-not (Test-Path -LiteralPath (Join-Path $appRoot 'node_modules'))) {
+    Push-Location $appRoot
+    try { & npm.cmd ci --no-audit --no-fund } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw 'WebCapture dependency install (npm ci) failed.' }
+  }
   & node (Join-Path $appRoot 'scripts\sync-appdetail.mjs')
   if ($LASTEXITCODE -ne 0) { throw 'WebCapture AppDetail sync failed.' }
   $stdout = Join-Path $runtimeDir 'server.stdout.log'
