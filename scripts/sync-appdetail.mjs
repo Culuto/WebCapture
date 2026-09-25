@@ -9,6 +9,12 @@ const appDetailSpecPath = path.resolve(root, config.appDetailSpecPath || 'AppDet
 const detail = path.join(root, 'AppDetail');
 await Promise.all([mkdir(path.join(detail, 'Detail'), { recursive: true }), mkdir(path.join(detail, 'Apptheme'), { recursive: true })]);
 const updatedAt = new Date().toISOString();
+async function writeJsonKeepingTimestamp(file, value) {
+  const previous = await readFile(file, 'utf8').then(JSON.parse).catch(() => null);
+  const withoutTime = (item) => JSON.stringify({ ...item, updatedAt: undefined });
+  const next = previous && withoutTime(previous) === withoutTime(value) ? { ...value, updatedAt: previous.updatedAt } : value;
+  await writeFile(file, `${JSON.stringify(next, null, 2)}\n`);
+}
 const info = {
   Appname: config.appName,
   Systemname: config.systemName,
@@ -80,9 +86,9 @@ const integration = `# ${config.systemName} 連携情報
 `;
 await Promise.all([
   writeFile(path.join(detail, 'Appdetail.md'), await readFile(appDetailSpecPath)),
-  writeFile(path.join(detail, `Appinfo_${config.systemName}.json`), `${JSON.stringify(info, null, 2)}\n`),
-  writeFile(path.join(detail, `Apptheme_${config.systemName}.json`), `${JSON.stringify(theme, null, 2)}\n`),
-  writeFile(path.join(detail, `AppLaunch_${config.systemName}.json`), `${JSON.stringify(launch, null, 2)}\n`),
+  writeJsonKeepingTimestamp(path.join(detail, `Appinfo_${config.systemName}.json`), info),
+  writeJsonKeepingTimestamp(path.join(detail, `Apptheme_${config.systemName}.json`), theme),
+  writeJsonKeepingTimestamp(path.join(detail, `AppLaunch_${config.systemName}.json`), launch),
   writeFile(path.join(detail, 'Detail', `Integration_${config.systemName}.md`), integration)
 ]);
 console.log(`AppDetail synced: ${config.systemName} ${config.version}`);
