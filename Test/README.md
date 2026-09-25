@@ -1,0 +1,61 @@
+# WebCapture 恒久テスト（旧名 SiteVault）
+
+`npm test` で次を確認する。
+
+- CPU・メモリ・ディスク・通信・GPUの数値記録、取得不能値、JSONL履歴
+- 複数ジョブ共通のFIFO並列枠、高負荷時の段階的な上限調整、待機中断
+
+- URL正規化、親サイト判定、深度30/5の警告境界
+- localhost、LAN、link-local、予約IP、DNS混在によるSSRF拒否
+- SHA-256 blob、manifest、WARC 1.1 gzip
+- HTML/CSSのアーカイブ内URL書換えとフォーム送信遮断
+- localhost管理API、別origin再生、Host・Origin・CSRF検査
+- Chrome / Edgeがある環境では、描画後DOM、素材、スクリーンショット、非送信クリック状態の実キャプチャ
+
+ネット上の実サイトへは接続せず、ブラウザテストだけ127.0.0.1の使い捨てfixtureを明示的なテスト許可で使用する。本番コードはローカルURLを拒否する。
+
+保存・再生の監査で再現した問題は `save-replay-regressions.test.mjs` で継続確認する。構造把握・本保存の停止と再開、URL変換の正確さ、data画像、HTTP状態・部分取得、欠落表示の状態遷移、削除失敗時の復元、WARC圧縮の可逆性を、既存アーカイブに触れず検証する。
+
+埋め込み再生の直接親へのリンク・フォーム通知、初期化中とバッチ境界での中止結果登録も検証する。`browser-capture.test.mjs` はOSにfixture字体がある場合、FontFaceのバイナリ原本とCSSOMの追加・削除状態を実ブラウザで保存する。`controller-time.test.mjs` はPowerShell 5/7のUTC日時変換を確認し、起動済みアプリを停止しない。
+
+`repair-transaction.test.mjs` は補完準備、WARC追記、manifest、一覧、ジョブ件数の各段階で停止し、再起動後の復旧と二重加算防止を検証する。部分追記、準備データ破損、WARC不一致、WARCなしの設定も一時データだけで確認する。
+
+`offline-guard.test.mjs` と `server.test.mjs` は保存先の表記・アプリポートが違っても同じデータへの二重書込みを拒否し、所有プロセスの強制終了後も再使用できることを確認する。稼働中の本番アプリを停止しない。
+
+古いiframe文書のnavigationId通知除外、認証/決済/計測通信の品質分類、回転ログの更新日時順、CSRF session API、安全な通常終了API、品質一覧保存、60件ページングも恒久検証に含む。静的検査やfixture成功を、任意サイトの完全保存の証明とは扱わない。
+
+`capture-transaction.test.mjs` と専用の `crawl-crash-fixture.mjs` は、通常の2並列保存プロセスをprepared・WARC・manifest・archive・jobsの段階で実際に強制終了する。再起動2回と再開後に5ページ・6素材、各URLのWARC原本が1回ずつ、未処理URLと件数が一致することを確認する。部分追記、WARCなし、準備前の一時停止、準備後の中止、commit失敗、準備ジョブ改変、同サイズ/部分blob破損、同一blobの8同時保存も一時データで検証する。子プロセスのログは使い捨て保存先に分離し、本番データに故障は注入しない。
+
+## v2.0.0 保存忠実度の恒久テスト
+
+- `browser-capture.test.mjs`: 時間切れでもその時点の内容を保存する、確認ダイアログで止まらない、開けないページはChromeの理由文で失敗する、保存中の安全な操作で読み込まれる画像を保存し購入ボタンは押さない、閉じた・入れ子のShadow DOMと文書全体のスタイル、Shift_JISのページとCSS、別プロセスのiframeの中身（127.0.0.2で別サイトを用意）。
+- `charset.test.mjs`: ヘッダー・BOM・meta・@charsetの判定順、記録済み/未記録の本文の読み直し。
+- `media-capture.test.mjs`: HLS/DASHの配信リスト解析、部分取得動画の全体取得、上限超過の記録と残り分割ファイルの保持。
+- `deferred-media.test.mjs`: 未保存の動画を選んで後から保存し、manifest・一覧・件数を一括で更新する。保存処理中は拒否する。
+- `post-replay.test.mjs`: 読み込み時のPOSTを保存し、再生ページ内のfetchに保存済み応答が返る。キー順だけ違うJSONも照合する。
+- `replay-fidelity.test.mjs`: 親アプリ埋め込みの許可、入れ子の埋め込みの隔離、元のパスへの再読込、SPAの履歴移動、スクリプトによる外部への移動の遮断、実行ごとに変わるURLの照合。
+- `save-replay-regressions.test.mjs`: 保存時点のエラー応答（403など）には`x-sitevault-archived-status`を付け、全ページ表示検査が未保存と区別できる。
+- `replay-fidelity.test.mjs`: 再生ページへ差し込むスクリプトの構文、`/archive/:id/web/<URL>`形式で相対パスが保存データ内に解決されること、乱数・時計の固定、計測用POSTの空応答、スクリプトで作るフォントの保存データ参照。
+- v2.1.0: `browser-capture.test.mjs`でマウスを乗せると出る素材（CSSの:hoverとmouseenter）、閉じたShadow DOM内のリンク、WebGLの描画内容、PDFを開いたときのファイル判定を確認する。`crawler-options-integration.test.mjs`で同じURLでもページごとに違う応答を別版として保存し、リンク先のPDFをファイルとして保存することを実際の巡回で確認する。`replay-fidelity.test.mjs`で保存ファイルの案内ページとページごとの版の再生を確認する。
+- v2.1.1: `replay-fidelity.test.mjs`でアーカイブごとの別再生ホストと別アーカイブの拒否、Cookieがない埋め込みでの元パス復元、軽量表示でスクリプト等が止まること、重いページが応答確認と重さの通知を送ること、about:blank等への移動を親へ送らないことを確認する。
+- v2.2.0: `live-view.test.mjs`で保存中のライブ表示を確認する。枠ごとの状態と最新画面、短い間隔の画面の間引き、次のページへ移ったときに前の画面を出さないこと、見ている人がいる間だけ画面を配信し撮影中は止めること、実際のChromeで2ページを並列保存したとき両方の枠に画面（JPEG）・ページ名・工程が届くことを確認する。`server.test.mjs`でライブ表示APIの404・405を確認する。
+- v2.2.1: `crawler-options-integration.test.mjs`で、2並列のうち1ページが遅くても、もう一方が次々と次のページへ進み（遅いページの完了前に3ページ開始）、同時保存数を超えないことを確認する。`live-view.test.mjs`で画面の受信確認を遅らせて送信を1秒5枚までに抑えることを確認する。
+- v2.3.0: `load-governor.test.mjs`で低負荷モードON/OFFの並列数と切り替えの即時反映、`server.test.mjs`で設定APIの保存・CSRF・不正値拒否と全体枠6/32、`capture-options.test.mjs`で同時保存数6・構造把握32の上限、`crawler-options-integration.test.mjs`で一時停止中の保存がアーカイブ一覧に出て削除できず、再開・完了で状態が変わることを確認する。
+- v2.4.0: `crawler-options-integration.test.mjs`で、503が2回続くページは3回目で保存して「回復」、429が続くページは3回で「失敗」、404は取り直さないこと、保存中の保存がアーカイブ一覧に「保存中」で出ることを確認する。`capture-transaction.test.mjs`で確定失敗時に途中の記録が完了・失敗で上書きされないことを確認する。
+- v2.5.0: `concurrency-tuner.test.mjs`で最適化モードが30・64から始まり、エラー・CPU100%で1ずつ（5秒間隔・最小1）下がることを確認する。`crawler-options-integration.test.mjs`で503のページが出るたびに実際の同時保存数が下がり、最終値が報告されることを確認する。
+- v2.6.0: `deep-interactions.test.mjs`で、閉じたShadow DOM内の「アカウント」ボタンからポップアップを開き、その中のボタンを3段目まで試して出てきた画像・通信を保存すること、非表示のラジオボタンをラベル経由で切り替えて商品の種類ごとの画像を保存すること、ログインボタン・ページ移動・フォーム送信は起きないことを実際のChromeで確認する。
+- v2.6.1: `crawler-options-integration.test.mjs`で、保存途中に保存用Chromeを強制終了しても自動で起動し直し、全ページを保存して完了することを確認する。`concurrency-tuner.test.mjs`でメモリ97%以上でも1つ下げることを確認する。
+- v2.6.3: `crawler-options-integration.test.mjs`で、開いたページが保存範囲外へ転送されたら読み込み直後にやめ、エラーに数えず「転送先が保存範囲外」として記録すること、起動時に取り残された「保存中」のアーカイブ表示を一時停止へ直すことを確認する。
+- v2.7.0: `noise-filter.test.mjs`で計測・広告・ログ送信だけを見分けること（通常の画像・ページ・pixel.gifという名前の画像は止めない）、名乗りにHeadlessを含めないこと、計測の通信が0.3秒ごとに続くページでも完了待ちが長引かず、計測の通信が保存もサーバー到達もされず、navigator.webdriverがfalseであることを実際のChromeで確認する。
+- v2.7.1: `resource-recovery.test.mjs`で、元のサーバーが本当に0バイトを返す素材は「空のファイルとして保存済み」とし欠落に数えないこと、サーバーエラーで空のものは失敗のままにすること、ログインが必要な部品（Googleログインボタン・XのログインユーザーAPI）を外部サービスの境界として数えることを確認する。`noise-filter.test.mjs`で、URLにanalyticsを含む普通のページを止めないことを実際のChromeで確認する。
+- v2.8.0: `crawler-options-integration.test.mjs`で完了前の自動修正（取り直しで失敗したページと取れなかった素材を同じ保存の中で取り直し、エラーに数えない）、分散アクセスの同時数と間隔、`policy.test.mjs`で同じサイト内の転送の階層とログイン・カート等のURL判定、`issue-report.test.mjs`で原因別の分類、`notify.test.mjs`で通知文面の安全な扱いを確認する。
+- v3.0.0: `search-index.test.mjs`（本文の取り出し、横断検索、索引の作り直し）、`login-profiles.test.mjs`（Cookie3形式の読み取り、貼り付けたCookieでログイン状態のページを実際のChromeで保存し印を付ける、一覧にCookieの中身を残さない）、`shared-pages.test.mjs`（保存済み外部ページを取り直さず共有、参照の記録と再起動後の復元、再生の転送）、`server.test.mjs`（ログインAPIの入力検査とCSRF、共有されているアーカイブの削除拒否）を確認する。
+- v3.0.1: `login-profiles.test.mjs`で、専用ブラウザでのログインがサイト指定なしで検索ページを開き、ウィンドウを閉じると登録完了になり、開き直せることを確認する。
+- v3.0.2: `crawler-options-integration.test.mjs`で、同じサイトへの同時アクセスを無制限にすると同時保存数まで並行して開くことを確認する。
+- v3.1.0: `ui-settings.test.mjs`で、画面設定の保存値の検査（壊れた値は既定に戻す）、テーマの解決、URLの対象/除外の書き方がサーバーの判定と一致すること、入力欄の例が「https://example.com」だけであること、保存範囲が1つの切替ボタンであること、？の説明が1種類であること、ライブ表示が独立したカードで16:9であること、保存済みサイトが追従しないこと、エラー0件で赤字にしないこと、画面の固定文言がすべて英訳を持つこと、バージョン表記の一致（不一致だと起動しない）を確認する。`load-governor.test.mjs`で「少し減速」の段階、`login-profiles.test.mjs`でサーバー再起動後に「開いている」のまま残らないことを確認する。
+- v3.1.1: `account-redirects.test.mjs`で、使い捨ての鍵だけ違うURLを同じページとして扱い1回だけ開くこと、保存済みログイン画面へ転送されたリンクを再生時にそのページへ302で案内すること（本当に未保存なら404のまま）、取り直し後に転送で片付いたページに「取り直し中」を残さないこと、パスキーの呼び出しを拒否しパスキー以外は元の処理へ渡すこと、実際のChromeでパスキーを求めるページが止まらず拒否されることを確認する。`ui-settings.test.mjs`で保存タブのスクロール位置の自動補正を切っていることを確認する。
+- v3.2.0: `continue-retry.test.mjs`（外部サイトの問題を点数に含めない品質、容量の種類別の内訳、中止した保存の続き、失敗ページの取り直しとログインサイトの選択、止まったページの打ち切りと取り直し）、`discovery.test.mjs`（把握だけのモードで保存せずに100を超える同時数で調べ、サイトごとの件数を出し、除外を選んで保存開始・破棄、ブラウザでJavaScriptのリンクも拾い画像は読み込まない）、`media-lane.test.mjs`（動画を後回しにしてページを待たせず、終わるまでに全部そろえる）、`resave-diff.test.mjs`（再保存と追加・削除・変更ページ、行単位の差分）、`export-import.test.mjs`（SiteVault形式の書き出しと別の場所での読み込み、危ないファイル名の拒否、WACZのZIP・索引・目録の正しさ）、`interaction-mode.test.mjs`（操作の回数上限・無制限・代表的なものだけを実際のChromeで確認）。
+- v3.2.1: `redirect-chain.test.mjs`で、何度転送されてもリンク1回を1段と数えること（3つの配信元をまたぐ転送でも外部1段で保存）、部品の中身（Shadow DOM）を部品が自分で作れば保存時の中身で上書きせず、作らなかった部品だけ戻すことを実際のChromeで確認し、`login_with_shop`を外部機能の境界として数えること、未保存のログイン系URLを保存済みログイン画面へ案内することを確認する。`save-replay-regressions.test.mjs`で、一覧にないURLを最初から「未保存」と決めつけず、保存済みページへ案内されたらそのページとして表示完了にすることを確認する。
+- v3.2.2: `replay-dynamic.test.mjs`で、preloadの`imagesrcset`の書き換え、固定表示（`mode=static`）で元のスクリプトだけ外し動きは止めないこと、埋め込み枠では切り替えないこと、実際のChromeでスクリプトが後から付けた背景画像（5通りの付け方とpreload）が保存済み画像を使い元のサイトへ通信しないこと、本文を消すページは保存時の見た目へ切り替わり、本文が増えるだけのページは切り替わらないことを確認する。
+- v3.3.0: `replay-speed-capture.test.mjs`で、送信応答の選び方（毎回変わる値を無視、gzip本文、ID違いは代用しない、続きの目印の有無、鍵などクエリ違い、本文なしはページURLのID）、再生サーバーへ本文付きで問い合わせて近い応答が返ること、以前のGETでの問い合わせ、素材のETag・304・キャッシュ期間、同じ中身でも置き場所ごとの書き換え、事前準備の一覧（動画を除く）、実際のChromeで読み込み途中の素材を待たずに保存を終え取り直し対象に残すこと、保存用ブラウザを閉じるのが20秒以内であることを確認する。`server.test.mjs`で画面用の要約（`view=summary`）に素材一覧を含めないことを確認する。
+- v4.0.0（SiteVault → WebCapture 改名）: `rename-compat.test.mjs`で、旧環境変数の引き継ぎ、旧名で保存したHTMLの印の読み替え、旧画面設定の読み込み、新しい拡張子と旧拡張子の受け付け、画面・パッケージ・起動ファイルに旧名が残らないこと、Windows以外でのブラウザの探し方、`.gitignore`に保存データ・ログ・秘密情報・手元の起動パスが入っていること、LICENSE・NOTICE・README・AGENTS.md・CLAUDE.mdがあることを確認する。`export-import.test.mjs`で旧名の `.sitevault` ファイルの読み込みを確認する。テスト実行時のログ保存先は `WEBCAPTURE_LOG_ROOT`（旧 `SITEVAULT_LOG_ROOT` も可）。

@@ -1,0 +1,25 @@
+{
+  "name": "webcapture",
+  "version": "4.0.0",
+  "description": "Save websites you are allowed to archive and replay them offline in an isolated viewer.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server/server.mjs",
+    "start": "node server/server.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test --test-concurrency=1 Test/*.test.mjs",
+    "audit:archive": "node scripts/audit-archive.mjs",
+    "repair:srcset": "node scripts/repair-archive-srcset.mjs",
+    "appdetail:sync": "node scripts/sync-appdetail.mjs",
+    "appdetail:check": "node scripts/check-appdetail.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "lucide": "1.46.0",
+    "tldts": "^7.4.11"
+  }
+}

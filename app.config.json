@@ -1,0 +1,19 @@
+{
+  "appName": "WebCapture",
+  "systemName": "WebCapture",
+  "version": "4.0.0",
+  "host": "127.0.0.1",
+  "port": 43193,
+  "replayPort": 43194,
+  "mainColor": "#FFFFFF",
+  "accentColor": "#0B5FFF",
+  "fontColor": "#171A21",
+  "warningColor": "#D99000",
+  "appDetailSpecPath": "AppDetail/Appdetail.md",
+  "iframeParentOrigins": [
+    "http://127.0.0.1:8090",
+    "http://localhost:8090",
+    "https://127.0.0.1:8090",
+    "https://localhost:8090"
+  ]
+}

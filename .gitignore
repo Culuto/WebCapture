@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Saved archives, login state, logs and local runtime files (never commit)
+data/
+data-*/
+runtime/
+*.log
+*.tmp
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Machine-specific launcher paths
+AppDetail/AppLaunch_*.json
+
+# Screenshots of third-party sites used during design review
+docs/*.png
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
