@@ -749,6 +749,7 @@ export function initFeatures(ctx) {
 
   // 定期的な更新
   async function tick() {
+    if (document.visibilityState === 'hidden') return;
     await Promise.all([loadNotifications(), loadBatches()]);
     if ($('#settings-view').classList.contains('active')) await loadWatches();
   }
@@ -757,6 +758,7 @@ export function initFeatures(ctx) {
   loadSchedules();
   tick();
   setInterval(tick, 5000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(); });
 
   return {
     onArchiveOpened() {

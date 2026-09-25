@@ -14,6 +14,33 @@ import { installArchivedClock, installSeededRandom, pageSeed } from './determini
 import { archiveIdFromReplayHost, archiveReplayHost } from '../public/replay-origin.js';
 import { siteReplayResponse } from './site-adapters.mjs';
 
+const adapterHtmlCache = new Map();
+let adapterHtmlBytes = 0;
+const ADAPTER_HTML_LIMIT = 32 * 1024 * 1024;
+
+function adapterPageReader(store, archiveId) {
+  return async (page) => {
+    const key = `${archiveId}:${page.html}`;
+    const cached = adapterHtmlCache.get(key);
+    if (cached !== undefined) {
+      adapterHtmlCache.delete(key);
+      adapterHtmlCache.set(key, cached);
+      return cached;
+    }
+    const html = await fs.readFile(path.join(store.archiveRoot(archiveId), page.html), 'utf8').catch(() => '');
+    if (html.length <= ADAPTER_HTML_LIMIT / 4) {
+      adapterHtmlCache.set(key, html);
+      adapterHtmlBytes += html.length;
+      while (adapterHtmlBytes > ADAPTER_HTML_LIMIT && adapterHtmlCache.size) {
+        const [oldest, value] = adapterHtmlCache.entries().next().value;
+        adapterHtmlCache.delete(oldest);
+        adapterHtmlBytes -= value.length;
+      }
+    }
+    return html;
+  };
+}
+
 const assetAttributeNames = ['src', 'poster', 'data-src', ...IMAGE_SOURCE_ATTRIBUTES].join('|');
 const quotedAssetAttributes = new RegExp(`(^|\\s)(${assetAttributeNames})\\s*=\\s*(["'])(.*?)\\3`, 'gi');
 const bareAssetAttributes = new RegExp(`(^|\\s)(${assetAttributeNames})\\s*=\\s*([^\\s"'>]+)`, 'gi');
@@ -641,7 +668,7 @@ export function createReplayHandler(store, config) {
         const adapted = await siteReplayResponse({
           manifest, target, method: 'POST', body: requestBody,
           pageUrl: (() => { try { return decodeURIComponent(String(req.headers['x-webcapture-page'] || '')); } catch { return ''; } })() || currentReplayPage(req, lastPages)?.pageUrl || '',
-          readFile: (file) => fs.readFile(path.join(store.archiveRoot(archiveId), file))
+          readFile: (file) => fs.readFile(path.join(store.archiveRoot(archiveId), file)), readPageHtml: adapterPageReader(store, archiveId)
         }).catch(() => null);
         if (adapted) {
           logEvent('info', 'replay', 'post.site-adapter.served', { archiveId, resourceUrl: safeUrl(target), adapter: adapted.adapter, bytes: adapted.body.length });
@@ -701,7 +728,7 @@ export function createReplayHandler(store, config) {
       }, auxiliary.body);
     }
     if (!resource) {
-      const adapted = await siteReplayResponse({ manifest, target, method: 'GET', pageUrl: currentPage?.pageUrl || '', readFile: (file) => fs.readFile(path.join(store.archiveRoot(archiveId), file)) }).catch(() => null);
+      const adapted = await siteReplayResponse({ manifest, target, method: 'GET', pageUrl: currentPage?.pageUrl || '', readFile: (file) => fs.readFile(path.join(store.archiveRoot(archiveId), file)), readPageHtml: adapterPageReader(store, archiveId) }).catch(() => null);
       if (adapted) {
         logEvent('info', 'replay', 'resource.site-adapter.served', { archiveId, resourceUrl: safeUrl(target), adapter: adapted.adapter, bytes: adapted.body.length });
         return send(res, adapted.status, { ...commonHeaders, 'content-type': adapted.contentType, 'content-length': adapted.body.length, 'x-webcapture-site-adapter': adapted.adapter }, adapted.body);

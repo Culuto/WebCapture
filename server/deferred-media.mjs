@@ -121,11 +121,13 @@ export class DeferredMediaService {
     manifest.blocked = (manifest.blocked || []).filter((item) => !(savedUrls.has(item.url) && /上限（/.test(item.reason || '')));
     const warcChunk = records.length ? await createWarcAsync(records, { repair: 'deferred-media' }, manifest.options?.warcCompressionLevel ?? 1) : Buffer.alloc(0);
     const archive = store.getArchive(archiveId);
+    const prunedRestored = Boolean(manifest.prunedMedia) && !(manifest.deferredMedia || []).some((item) => item.pruned);
+    if (prunedRestored) delete manifest.prunedMedia;
     manifest.quality = summarizeArchiveQuality(manifest, archive || {});
     const resourceCount = Object.keys(manifest.resources).length;
     await commitArchiveRepair(store, archiveId, {
       manifest, warcChunk,
-      archive: archive ? { ...archive, quality: manifest.quality, resources: resourceCount, bytes: Number(archive.bytes || 0) + addedBytes + warcChunk.length, repairedAt: new Date().toISOString() } : null,
+      archive: archive ? { ...archive, quality: manifest.quality, resources: resourceCount, bytes: Number(archive.bytes || 0) + addedBytes + warcChunk.length, repairedAt: new Date().toISOString(), ...(prunedRestored ? { prunedAt: null, prunedMediaCount: 0 } : {}) } : null,
       jobs: store.state.jobs.filter((job) => job.archiveId === archiveId).map((job) => ({ id: job.id, resources: resourceCount, bytes: Number(job.bytes || 0) + addedBytes + warcChunk.length }))
     });
     task.status = task.failed ? (task.completed ? 'completed-with-errors' : 'failed') : 'completed';

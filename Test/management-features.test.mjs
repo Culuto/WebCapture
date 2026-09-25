@@ -415,3 +415,29 @@ test('定期保存・まとめて保存：一時停止や中止で止まった�
   assert.equal(summary.paused, 1);
   assert.equal(summary.running, 1, '一時停止したら次のURLへ進む');
 });
+
+test('容量の自動整理：消した動画を後から保存で取り直したら、整理済みの印を外す', async (t) => {
+  const root = await tempRoot(t, 'cleanup-restore');
+  const store = await new VaultStore(root).init();
+  store.blobSharing = false;
+  await archiveFixture(store, 'archive_restore_old', { savedAt: '2026-01-01T00:00:00.000Z', blobs: [['https://example.com/clip.mp4', 'clip-bytes', 'video/mp4']] });
+  await archiveFixture(store, 'archive_restore_new', { savedAt: '2026-06-01T00:00:00.000Z' });
+  const service = await new StorageCleanupService({ dataRoot: root, store }).init();
+  await service.pruneArchive('archive_restore_old');
+  assert.ok(store.getArchive('archive_restore_old').prunedAt);
+  const { DeferredMediaService } = await import('../server/deferred-media.mjs');
+  const media = new DeferredMediaService({
+    store,
+    fetcher: async (url, options) => {
+      await options.bodySink(Buffer.from('clip-bytes'));
+      return { finalUrl: url, response: { ok: true, status: 200, headers: new Headers({ 'content-type': 'video/mp4' }) } };
+    }
+  });
+  const task = await media.start('archive_restore_old');
+  while (task.status === 'running') await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(task.status, 'completed');
+  const manifest = await store.readManifest('archive_restore_old');
+  assert.ok(manifest.resources['https://example.com/clip.mp4']);
+  assert.equal(manifest.prunedMedia, undefined);
+  assert.equal(store.getArchive('archive_restore_old').prunedAt, null);
+});

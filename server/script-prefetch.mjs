@@ -9,6 +9,7 @@ const PRELOAD_LINK = /<link\b[^>]*\brel\s*=\s*["']?(?:modulepreload|preload|pref
 const HREF = /\bhref\s*=\s*(["'])(.*?)\1/i;
 const SCRIPT_TYPE = /javascript|ecmascript/i;
 const MAX_SCAN_BYTES = 6 * 1024 * 1024;
+const PREFETCH_WORKERS = 6;
 
 function unescapeLiteral(value) {
   return String(value).replace(/\\\//g, '/').replace(/\\u002[fF]/g, '/').replace(/&amp;/gi, '&');
@@ -63,7 +64,7 @@ export function prefetchCandidates(capture, { knownResourceUrls = new Set(), lim
   return candidates;
 }
 
-export async function prefetchScriptReferences(capture, options = {}, diagnostic = {}, { fetcher, limit = 120, maxBytes = 8 * 1024 * 1024, budgetMs = 30000 } = {}) {
+export async function prefetchScriptReferences(capture, options = {}, diagnostic = {}, { fetcher, limit = 120, maxBytes = 8 * 1024 * 1024, budgetMs = 20000 } = {}) {
   if (!capture?.html || options.prefetchScripts === false || typeof fetcher !== 'function') return capture;
   const queue = prefetchCandidates(capture, { knownResourceUrls: options.knownResourceUrls, limit });
   if (!queue.length) return capture;
@@ -75,9 +76,7 @@ export async function prefetchScriptReferences(capture, options = {}, diagnostic
   let saved = 0;
   let failed = 0;
   try {
-    while (queue.length && !signal.aborted && attempted < limit) {
-      const batch = queue.splice(0, 6);
-      await Promise.all(batch.map(async (url) => {
+    const fetchOne = async (url) => {
         attempted += 1;
         try {
           const { response, finalUrl } = await fetcher(url, { ...options, signal, responseMaxBytes: maxBytes });
@@ -103,8 +102,18 @@ export async function prefetchScriptReferences(capture, options = {}, diagnostic
         } catch {
           failed += 1;
         }
-      }));
-    }
+    };
+    let active = 0;
+    await new Promise((resolve) => {
+      const pump = () => {
+        while (active < PREFETCH_WORKERS && queue.length && !signal.aborted && attempted < limit) {
+          active += 1;
+          fetchOne(queue.shift()).finally(() => { active -= 1; pump(); });
+        }
+        if (!active) resolve();
+      };
+      pump();
+    });
   } finally {
     clearTimeout(timer);
   }

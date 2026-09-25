@@ -14,6 +14,10 @@ const TERMINAL_STATUSES = new Set(['complete', 'complete-with-errors', 'cancelle
 const PRESERVED_ARCHIVE_FIELDS = Object.freeze(['tags', 'folder', 'note', 'prunedAt', 'prunedMediaCount', 'warcRemoved']);
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'discovering', 'pausing', 'paused', 'warning', 'discovered']);
 
+function blobSignature(stat) {
+  return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`;
+}
+
 export function createId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(5).toString('hex')}`;
 }
@@ -178,8 +182,13 @@ export class VaultStore {
       const peerFile = path.join(this.archiveRoot(peer), 'blobs', digest.slice(0, 2), digest);
       try {
         const stat = await fs.stat(peerFile);
-        if (stat.size !== size || await fileDigest(peerFile) !== digest) continue;
+        if (stat.size !== size) continue;
+        if (this.verifiedBlobs.get(peerFile) !== blobSignature(stat) && await fileDigest(peerFile) !== digest) continue;
         await fs.link(peerFile, file);
+        const linked = await fs.stat(file);
+        this.verifiedBlobs.set(file, blobSignature(linked));
+        this.verifiedBlobs.set(peerFile, blobSignature(linked));
+        while (this.verifiedBlobs.size > 2048) this.verifiedBlobs.delete(this.verifiedBlobs.keys().next().value);
         return true;
       } catch (error) {
         if (error.code === 'EEXIST') return true;
@@ -712,7 +721,7 @@ export class VaultStore {
     const digest = crypto.createHash('sha256').update(buffer).digest('hex');
     const file = path.join(this.archiveRoot(id), 'blobs', digest.slice(0, 2), digest);
     await fs.mkdir(path.dirname(file), { recursive: true });
-    const signatureOf = stat => `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`;
+    const signatureOf = blobSignature;
     const remember = stat => {
       this.verifiedBlobs.set(file, signatureOf(stat));
       while (this.verifiedBlobs.size > 2048) this.verifiedBlobs.delete(this.verifiedBlobs.keys().next().value);
