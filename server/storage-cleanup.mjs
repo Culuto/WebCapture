@@ -7,6 +7,7 @@ import { logEvent } from './logger.mjs';
 const GiB = 1024 ** 3;
 const NOTIFY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const PLAN_REUSE_MS = 30 * 60 * 1000;
+const USAGE_CACHE_MS = 10 * 60 * 1000;
 const SEGMENT = /\.(?:ts|m4s|mp2t)$/i;
 
 export async function diskUsage(root) {
@@ -116,8 +117,12 @@ export class StorageCleanupService {
     return this.settings;
   }
 
-  async usage() {
-    return diskUsage(path.join(this.dataRoot, 'archives'));
+  async usage({ fresh = false } = {}) {
+    const now = this.now().getTime();
+    if (!fresh && this.usageCache && now - this.usageCache.at < USAGE_CACHE_MS) return this.usageCache.bytes;
+    const bytes = await diskUsage(path.join(this.dataRoot, 'archives'));
+    this.usageCache = { at: now, bytes };
+    return bytes;
   }
 
   async status() {
@@ -126,7 +131,7 @@ export class StorageCleanupService {
   }
 
   async buildPlan() {
-    const usedBytes = await this.usage();
+    const usedBytes = await this.usage({ fresh: true });
     const limitBytes = this.settings.limitGb * GiB;
     const newestByHost = new Map();
     for (const archive of this.store.listArchives()) {
@@ -194,6 +199,7 @@ export class StorageCleanupService {
     } finally {
       this.running = false;
       this.plan = null;
+      this.usageCache = null;
     }
     logEvent('info', 'cleanup', 'executed', { archives: results.length, freedBytes: results.reduce((sum, item) => sum + (item.freedBytes || 0), 0) });
     return { results, freedBytes: results.reduce((sum, item) => sum + (item.freedBytes || 0), 0) };

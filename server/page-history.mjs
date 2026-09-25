@@ -9,7 +9,7 @@ export async function pageHistory(store, searchIndex, url, { limit = 60 } = {}) 
   const items = [];
   for (const archive of store.listArchives()) {
     if (['running', 'queued'].includes(archive.status)) continue;
-    const entries = await searchIndex.entries(archive.id).catch(() => []);
+    const entries = await searchIndex.pageList(archive.id).catch(() => []);
     const match = entries.find((entry) => entry.url === url) || entries.find((entry) => keyOf(entry.url) === wanted);
     if (!match) continue;
     items.push({

@@ -78,6 +78,27 @@ export class SearchIndex {
     return entries;
   }
 
+  async pageList(archiveId) {
+    const file = this.indexFile(archiveId);
+    let stat = null;
+    try { stat = await fs.stat(file); } catch {}
+    if (!stat) return (await this.entries(archiveId)).map((entry) => ({ url: entry.url, title: entry.title }));
+    this.listCache ||= new Map();
+    const cached = this.listCache.get(archiveId);
+    if (cached?.mtimeMs === stat.mtimeMs) return cached.pages;
+    const latest = new Map();
+    const text = await fs.readFile(file, 'utf8');
+    for (const line of text.split('\n')) {
+      const head = line.match(/^\{"url":("(?:[^"\\]|\\.)*"),"title":("(?:[^"\\]|\\.)*")/);
+      if (!head) continue;
+      try { const url = JSON.parse(head[1]); latest.set(url, { url, title: JSON.parse(head[2]) }); } catch {}
+    }
+    const pages = [...latest.values()];
+    this.listCache.set(archiveId, { mtimeMs: stat.mtimeMs, pages });
+    while (this.listCache.size > 500) this.listCache.delete(this.listCache.keys().next().value);
+    return pages;
+  }
+
   async search(query, { limit = 50 } = {}) {
     const terms = String(query || '').toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean).slice(0, 8);
     if (!terms.length) return { results: [], total: 0 };
@@ -101,5 +122,6 @@ export class SearchIndex {
 
   forget(archiveId) {
     this.cache.delete(archiveId);
+    this.listCache?.delete(archiveId);
   }
 }

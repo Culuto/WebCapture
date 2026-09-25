@@ -441,3 +441,36 @@ test('容量の自動整理：消した動画を後から保存で取り直し�
   assert.equal(manifest.prunedMedia, undefined);
   assert.equal(store.getArchive('archive_restore_old').prunedAt, null);
 });
+
+test('日付で見比べる：本文を読まずにページの一覧を取り、追記された版を優先する', async (t) => {
+  const root = await tempRoot(t, 'page-list');
+  const store = await new VaultStore(root).init();
+  const index = new SearchIndex(store);
+  const file = index.indexFile('archive_list');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const line = (url, title, text) => JSON.stringify({ url, title, text });
+  await fs.writeFile(file, [line('https://example.com/a', 'He said "hi" \\ ok', 'x'.repeat(5000)), line('https://example.com/b', 'B', 'body'), line('https://example.com/a', 'A v2', 'new')].join('\n') + '\n');
+  assert.deepEqual(await index.pageList('archive_list'), [{ url: 'https://example.com/a', title: 'A v2' }, { url: 'https://example.com/b', title: 'B' }]);
+  await fs.appendFile(file, line('https://example.com/c', 'C', '') + '\n');
+  await fs.utimes(file, new Date(), new Date(Date.now() + 5000));
+  assert.equal((await index.pageList('archive_list')).length, 3, '索引が更新されたら読み直す');
+  const quoted = JSON.stringify({ url: 'https://example.com/q', title: 'He said "hi" \\ ok', text: '' });
+  await fs.writeFile(file, quoted + '\n');
+  await fs.utimes(file, new Date(), new Date(Date.now() + 10000));
+  assert.equal((await index.pageList('archive_list'))[0].title, 'He said "hi" \\ ok', '引用符やバックスラッシュを含む題名も読める');
+});
+
+test('容量の自動整理：使用量の集計は短い間は使い回し、整理案を作るときと整理後は数え直す', async (t) => {
+  const root = await tempRoot(t, 'usage-cache');
+  const store = await new VaultStore(root).init();
+  await archiveFixture(store, 'archive_usage');
+  let now = new Date(2026, 8, 25, 10, 0, 0);
+  const service = await new StorageCleanupService({ dataRoot: root, store, now: () => now }).init();
+  const first = await service.usage();
+  await fs.writeFile(path.join(store.archiveRoot('archive_usage'), 'extra.bin'), Buffer.alloc(4096));
+  assert.equal(await service.usage(), first, '10分以内は前回の集計を使う');
+  assert.equal(await service.usage({ fresh: true }), first + 4096);
+  now = new Date(2026, 8, 25, 10, 11, 0);
+  await fs.writeFile(path.join(store.archiveRoot('archive_usage'), 'extra2.bin'), Buffer.alloc(1024));
+  assert.equal(await service.usage(), first + 4096 + 1024, '時間が経てば数え直す');
+});
