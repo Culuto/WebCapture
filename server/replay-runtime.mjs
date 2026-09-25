@@ -208,7 +208,7 @@ export function installFindInPage(report) {
     show();
   };
   addEventListener('message', (event) => {
-    if (event.source !== parent || !event.data || event.data.type !== 'webcapture-find') return;
+    if (parent === window || event.source !== parent || !event.data || event.data.type !== 'webcapture-find') return;
     try { search(event.data.query, event.data.direction); } catch { clear(); }
     report('webcapture-find-result', { query: String(event.data.query || '').slice(0, 200), count: state.ranges.length, index: state.index });
   });

@@ -159,6 +159,7 @@ export class VaultStore {
     this.pendingReplayMisses = new Map();
     this.replayMissFlushTimers = new Map();
     this.blobSharing = true;
+    this.maintenanceLocks = new Set();
     this.blobPeerCache = new Map();
   }
 

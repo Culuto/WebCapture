@@ -290,3 +290,5 @@
 テスト方法：`Test/management-features.test.mjs`、`Test/fidelity-features.test.mjs`、`Test/feature-api.test.mjs`、`Test/replay-auditor.test.mjs`。
 
 変更しないと起きる問題：なし（機能追加）。
+
+補足（レビュー対応）：`GET /api/archives/:id/page-export` はほかのサイトから呼ばれた場合（`Origin`不一致、`Sec-Fetch-Site: cross-site`）に403を返す。容量の整理は、ほかのアーカイブから共有されているアーカイブを対象にせず、整理中のアーカイブへの取り直し・続き・後から保存・削除を409で断る。Windows通知の文面は、PowerShellが引用符とみなす全角の記号も無害にする。

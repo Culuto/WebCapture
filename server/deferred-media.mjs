@@ -46,7 +46,7 @@ export class DeferredMediaService {
   async start(archiveId, urls = null) {
     const current = this.tasks.get(archiveId);
     if (current?.status === 'running') return current;
-    if (this.store.state.jobs.some((job) => job.archiveId === archiveId && ACTIVE_JOB_STATUSES.has(job.status))) {
+    if (this.store.maintenanceLocks?.has(archiveId) || this.store.state.jobs.some((job) => job.archiveId === archiveId && ACTIVE_JOB_STATUSES.has(job.status))) {
       throw serviceError('このアーカイブは保存処理中のため、完了してから実行してください。', 'ARCHIVE_BUSY', 409);
     }
     const manifest = await this.store.readManifest(archiveId);

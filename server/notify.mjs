@@ -8,7 +8,7 @@ function escapeXml(value) {
 }
 
 function escapePowerShell(value) {
-  return String(value).replace(/'/g, "''");
+  return String(value).replace(/['\u2018\u2019\u201A\u201B]/g, (quote) => `${quote}${quote}`);
 }
 
 export function toastScript(title, message) {

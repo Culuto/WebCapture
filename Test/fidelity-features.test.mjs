@@ -27,11 +27,11 @@ function response(body, { status = 200, type = 'text/javascript' } = {}) {
   return { ok: status >= 200 && status < 300, status, headers: new Headers({ 'content-type': type }), arrayBuffer: async () => buffer };
 }
 
-async function startReplay(t, store) {
+async function startReplay(t, store, { appPort = 1 } = {}) {
   const replayPort = await freePort();
-  const server = http.createServer(createReplayHandler(store, { host: '127.0.0.1', port: 1, replayPort }));
+  const server = http.createServer(createReplayHandler(store, { host: '127.0.0.1', port: appPort, replayPort }));
   await new Promise((resolve) => server.listen(replayPort, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
   return { replayPort, base: `http://127.0.0.1:${replayPort}` };
 }
 
@@ -269,7 +269,10 @@ test('実際のChrome：ページ内検索で一致を数えて強調し、PNG�
   const html = await store.writeBlob(id, Buffer.from('<!doctype html><html><head><title>Export</title></head><body><h1>Apple and apple</h1><p style="height:1500px">APPLE pie</p><footer>end</footer></body></html>'));
   await store.writeManifest(id, { id, startUrl: 'https://example.com/', options: {}, resources: {}, resourceAliases: {}, pages: [{ url: 'https://example.com/', html: html.file, title: 'Export' }] });
   await store.addArchive({ id, startUrl: 'https://example.com/', title: 'Export', status: 'complete', pages: 1, resources: 0, bytes: 1, errors: 0, savedAt: new Date().toISOString() });
-  const { replayPort, base } = await startReplay(t, store);
+  const parentPage = http.createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end('<!doctype html><title>Parent</title><body></body>'); });
+  await new Promise((resolve) => parentPage.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { parentPage.closeAllConnections(); parentPage.close(resolve); }));
+  const { replayPort, base } = await startReplay(t, store, { appPort: parentPage.address().port });
   const config = { host: '127.0.0.1', replayPort };
   const png = await exportReplayPage({ archiveId: id, pageUrl: 'https://example.com/', format: 'png', config });
   assert.deepEqual([...png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
@@ -278,12 +281,19 @@ test('実際のChrome：ページ内検索で一致を数えて強調し、PNG�
   assert.equal(pdf.subarray(0, 4).toString(), '%PDF');
   const session = await createLocalAuditBrowser({ executable: browser });
   t.after(() => session.close());
-  await navigateAndSettle(session.client, `${base}/archive/${id}/page?url=${encodeURIComponent('https://example.com/')}`, { settleMs: 300 });
-  const result = evaluateValue(await session.client.send('Runtime.evaluate', {
-    expression: `new Promise((resolve) => { addEventListener('message', (event) => { if (event.data && event.data.type === 'webcapture-find-result') resolve({ count: event.data.count, index: event.data.index, highlighted: CSS.highlights.has('webcapture-find') }); }); postMessage({ type: 'webcapture-find', query: 'apple' }, '*'); })`,
+  const pageUrl = `${base}/archive/${id}/page?url=${encodeURIComponent('https://example.com/')}`;
+  await navigateAndSettle(session.client, pageUrl, { settleMs: 300 });
+  const ignored = evaluateValue(await session.client.send('Runtime.evaluate', {
+    expression: `new Promise((resolve) => { addEventListener('message', (event) => { if (event.data && event.data.type === 'webcapture-find-result') resolve('answered'); }); postMessage({ type: 'webcapture-find', query: 'apple' }, '*'); setTimeout(() => resolve('ignored'), 800); })`,
     awaitPromise: true, returnByValue: true
   }, 10000));
-  assert.deepEqual(result, { count: 3, index: 0, highlighted: true });
+  assert.equal(ignored, 'ignored', '単独で開いたときはページ自身からの検索の指示を受け付けない');
+  await navigateAndSettle(session.client, `http://127.0.0.1:${parentPage.address().port}/`, { settleMs: 100 });
+  const result = evaluateValue(await session.client.send('Runtime.evaluate', {
+    expression: `new Promise((resolve) => { const frame = document.createElement('iframe'); frame.src = ${JSON.stringify(pageUrl)}; addEventListener('message', (event) => { if (event.source === frame.contentWindow && event.data && event.data.type === 'webcapture-find-result') resolve({ count: event.data.count, index: event.data.index }); }); frame.onload = () => setTimeout(() => frame.contentWindow.postMessage({ type: 'webcapture-find', query: 'apple' }, '*'), 300); document.body.append(frame); })`,
+    awaitPromise: true, returnByValue: true
+  }, 15000));
+  assert.deepEqual(result, { count: 3, index: 0 });
 });
 
 test('実際のChrome：保存処理でスマホ表示と読み込まれなかった部品を一緒に保存し、再生で切り替えられる', { timeout: 180000 }, async (t) => {

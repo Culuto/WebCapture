@@ -76,12 +76,13 @@ export function deferredEntriesFor(resources, recordedAt) {
 }
 
 export class StorageCleanupService {
-  constructor({ dataRoot, store, isBusy = () => false, notifications = null, now = () => new Date(), intervalMs = 60 * 60 * 1000 }) {
+  constructor({ dataRoot, store, isBusy = () => false, isShared = () => false, notifications = null, now = () => new Date(), intervalMs = 60 * 60 * 1000 }) {
     this.dataRoot = dataRoot;
     this.file = path.join(dataRoot, 'cleanup.json');
     this.write = createSerialWriter(this.file);
     this.store = store;
     this.isBusy = isBusy;
+    this.isShared = isShared;
     this.notifications = notifications;
     this.now = now;
     this.intervalMs = intervalMs;
@@ -133,7 +134,7 @@ export class StorageCleanupService {
       if (host && !newestByHost.has(host)) newestByHost.set(host, archive.id);
     }
     const candidates = this.store.listArchives().slice().reverse()
-      .filter((archive) => newestByHost.get(hostOf(archive.startUrl)) !== archive.id && !this.isBusy(archive.id));
+      .filter((archive) => newestByHost.get(hostOf(archive.startUrl)) !== archive.id && !this.isBusy(archive.id) && !this.isShared(archive.id));
     const items = [];
     let freeable = 0;
     for (const archive of candidates) {
@@ -198,9 +199,16 @@ export class StorageCleanupService {
     return { results, freedBytes: results.reduce((sum, item) => sum + (item.freedBytes || 0), 0) };
   }
 
-  async pruneArchive(archiveId, { includeWarc = false } = {}) {
+  async pruneArchive(archiveId, options = {}) {
     if (this.isBusy(archiveId)) throw serviceError('保存中のアーカイブは整理できません。', 'ARCHIVE_BUSY', 409);
+    if (this.isShared(archiveId)) throw serviceError('ほかのアーカイブから共有されているページを含むため整理できません。', 'ARCHIVE_SHARED', 409);
     this.store.assertArchiveWritable(archiveId);
+    this.store.maintenanceLocks.add(archiveId);
+    try { return await this.pruneLocked(archiveId, options); }
+    finally { this.store.maintenanceLocks.delete(archiveId); }
+  }
+
+  async pruneLocked(archiveId, { includeWarc = false } = {}) {
     const manifest = structuredClone(await this.store.readManifest(archiveId));
     if (!manifest) throw serviceError('保存済みサイトが見つかりません。', 'NOT_FOUND', 404);
     const root = this.store.archiveRoot(archiveId);

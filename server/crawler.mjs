@@ -556,6 +556,7 @@ export class CrawlManager {
   }
 
   archiveBusy(archiveId) {
+    if (this.store.maintenanceLocks?.has(archiveId)) return true;
     return this.jobsForArchive(archiveId).some((job) => ['queued', 'running', 'discovering', 'pausing', 'paused', 'warning'].includes(job.status));
   }
 
@@ -1222,6 +1223,14 @@ export class CrawlManager {
             if (!await robotsAllows(item.normalized, { ...job.options, signal: controller.signal }, robotsCache)) return { ...item, blockedByRobots: true };
             const knownResourceUrls = new Set(Object.values(manifest.resources).filter(resource => resource.status < 400 && (resource.size > 0 || resource.emptyConfirmed || [204, 205].includes(resource.status))).map(resource => resource.url));
             const session = await getBrowserSession(sessionKindOf(item));
+            const acceptDocumentUrl = (documentUrl) => {
+              let finalUrl;
+              try { finalUrl = canonicalDocumentUrl(documentUrl); } catch { return true; }
+              if (finalUrl === item.normalized || classifyScope(job.startUrl, finalUrl, job.options) !== 'external') return true;
+              if (!job.options.followExternal) return false;
+              if (job.options.externalMaxDepth === null) return true;
+              return redirectChainExternalDepth({ startUrl: job.startUrl, requestedUrl: item.normalized, requestedExternalDepth: item.current.externalDepth, finalUrl, sameSiteKeywords: job.options.sameSiteKeywords }) <= job.options.externalMaxDepth;
+            };
             let capture;
             if (looksLikeFileUrl(item.normalized)) {
               live.phase('file');
@@ -1232,14 +1241,7 @@ export class CrawlManager {
                 capture = job.options.captureRendered && browser
                   ? await captureWithBrowser(item.normalized, {
                     ...captureOptionsForScope(job.options, item.current.scope), executable: browser, session: session || undefined, liveView: live, prepareProfile: preparerFor(item),
-                    acceptDocumentUrl: (documentUrl) => {
-                      let finalUrl;
-                      try { finalUrl = canonicalDocumentUrl(documentUrl); } catch { return true; }
-                      if (finalUrl === item.normalized || classifyScope(job.startUrl, finalUrl, job.options) !== 'external') return true;
-                      if (!job.options.followExternal) return false;
-                      if (job.options.externalMaxDepth === null) return true;
-                      return redirectChainExternalDepth({ startUrl: job.startUrl, requestedUrl: item.normalized, requestedExternalDepth: item.current.externalDepth, finalUrl, sameSiteKeywords: job.options.sameSiteKeywords }) <= job.options.externalMaxDepth;
-                    },
+                    acceptDocumentUrl,
                     timeoutMs: item.current.repair ? Math.round(job.options.requestTimeoutMs * 1.5) : job.options.requestTimeoutMs, responseMaxBytes: job.options.responseMaxBytes, signal: controller.signal,
                     diagnosticContext: { jobId: id, archiveId: job.archiveId, depth: item.current.depth }
                   })
@@ -1258,12 +1260,12 @@ export class CrawlManager {
               try {
                 const mobile = await captureWithBrowser(capture.url || item.normalized, {
                   ...captureOptionsForScope(job.options, item.current.scope), executable: browser, session: session || undefined, prepareProfile: preparerFor(item),
-                  mobile: true, interactDuringCapture: false, hoverDuringCapture: false,
+                  mobile: true, interactDuringCapture: false, hoverDuringCapture: false, acceptDocumentUrl,
                   timeoutMs: Math.min(Number(job.options.requestTimeoutMs) || 30000, 120000), finalizeGraceMs: Math.min(Number(job.options.finalizeGraceMs) || 45000, 60000),
                   responseMaxBytes: job.options.responseMaxBytes, signal: controller.signal,
                   diagnosticContext: { jobId: id, archiveId: job.archiveId, depth: item.current.depth, view: 'mobile' }
                 });
-                capture.mobile = { html: mobile.html, title: mobile.title, screenshot: mobile.screenshot, resources: mobile.resources || [], userAgent: mobile.userAgent, viewport: mobile.viewport, partial: Boolean(mobile.partial) };
+                capture.mobile = { url: mobile.url || capture.url || item.normalized, html: mobile.html, title: mobile.title, screenshot: mobile.screenshot, resources: mobile.resources || [], userAgent: mobile.userAgent, viewport: mobile.viewport, partial: Boolean(mobile.partial) };
               } catch (error) {
                 if (controller.signal.aborted) throw error;
                 capture.blocked ||= [];
@@ -1552,6 +1554,7 @@ export class CrawlManager {
               ? await this.store.writeScreenshot(job.archiveId, `${String(job.pages + 1).padStart(5, '0')}-mobile.png`, capture.mobile.screenshot)
               : null;
             mobileEntry = {
+              ...(capture.mobile.url && capture.mobile.url !== finalUrl ? { url: capture.mobile.url } : {}),
               html: mobileBlob.file, screenshot: mobileScreenshot, title: capture.mobile.title || '', userAgent: capture.mobile.userAgent || '',
               viewport: capture.mobile.viewport || null, capturedAt: new Date().toISOString(), ...(capture.mobile.partial ? { partial: true } : {})
             };

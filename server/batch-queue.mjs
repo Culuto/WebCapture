@@ -3,6 +3,7 @@ import { readJsonFile, createSerialWriter, randomId, serviceError } from './json
 import { logEvent, safeUrl } from './logger.mjs';
 
 const TERMINAL = new Set(['complete', 'complete-with-errors', 'cancelled', 'limit-reached', 'failed', 'blocked', 'login-required']);
+const STOPPED = new Set(['paused', 'warning', 'discovered']);
 export const MAX_BATCH_URLS = 500;
 
 export function parseUrlList(text) {
@@ -52,7 +53,7 @@ export class BatchQueue {
 
   summary(batch) {
     const count = (status) => batch.entries.filter((entry) => entry.status === status).length;
-    return { ...batch, total: batch.entries.length, done: count('done'), failed: count('failed'), pending: count('pending'), running: count('running'), skipped: count('skipped') };
+    return { ...batch, total: batch.entries.length, done: count('done'), failed: count('failed'), pending: count('pending'), running: count('running'), skipped: count('skipped'), paused: count('paused') };
   }
 
   list() { return this.items.slice().reverse().map((batch) => this.summary(batch)); }
@@ -95,9 +96,14 @@ export class BatchQueue {
       const running = batch.entries.find((entry) => entry.status === 'running');
       if (running) {
         const job = this.store.getJob(running.jobId);
-        if (job && !TERMINAL.has(job.status)) continue;
-        running.status = job && ['complete', 'complete-with-errors', 'limit-reached'].includes(job.status) ? 'done' : 'failed';
-        running.message = job ? job.message || job.status : '保存記録が見つかりません。';
+        if (job && !TERMINAL.has(job.status) && !STOPPED.has(job.status)) continue;
+        if (job && STOPPED.has(job.status)) {
+          running.status = 'paused';
+          running.message = '一時停止したため次へ進みました。保存タブから再開できます。';
+        } else {
+          running.status = job && ['complete', 'complete-with-errors', 'limit-reached'].includes(job.status) ? 'done' : 'failed';
+          running.message = job ? job.message || job.status : '保存記録が見つかりません。';
+        }
         changed = true;
       }
       let next = batch.status === 'running' ? batch.entries.find((entry) => entry.status === 'pending') : null;

@@ -620,7 +620,7 @@ export function createReplayHandler(store, config) {
         'content-security-policy': replayDocumentCsp(config),
         'x-webcapture-view': mobileView ? 'mobile' : 'desktop',
         'set-cookie': viewPreference.explicit ? [replayCookie(archiveId, page.url), `${VIEW_COOKIE}=${viewPreference.view}; Path=/; SameSite=Lax`] : replayCookie(archiveId, page.url)
-      }, rewriteHtml(html, page.url, archiveId, manifest.options, navigationId, { capturedAt: mobileView ? page.mobile.capturedAt || page.capturedAt : page.capturedAt, seedUrl: page.requestedUrl || page.url, light, still, guard: true, mobileUserAgent: mobileView ? page.mobile.userAgent || DEFAULT_MOBILE_USER_AGENT : '' }));
+      }, rewriteHtml(html, mobileView && page.mobile.url ? page.mobile.url : page.url, archiveId, manifest.options, navigationId, { capturedAt: mobileView ? page.mobile.capturedAt || page.capturedAt : page.capturedAt, seedUrl: page.requestedUrl || page.url, light, still, guard: true, mobileUserAgent: mobileView ? page.mobile.userAgent || DEFAULT_MOBILE_USER_AGENT : '' }));
     }
     if (match[2] === 'post') {
       let lookup = findPostResponse(manifest, {

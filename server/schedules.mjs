@@ -3,7 +3,9 @@ import { readJsonFile, createSerialWriter, randomId, serviceError } from './json
 import { logEvent } from './logger.mjs';
 
 export const SCHEDULE_FREQUENCIES = Object.freeze(['hourly', 'daily', 'weekly']);
-const ACTIVE = new Set(['queued', 'running', 'discovering', 'pausing', 'paused', 'warning', 'discovered']);
+const RUNNING = new Set(['queued', 'running', 'discovering', 'pausing']);
+const STOPPED = new Set(['paused', 'warning', 'discovered']);
+const TERMINAL = new Set(['complete', 'complete-with-errors', 'cancelled', 'limit-reached', 'failed', 'blocked', 'login-required']);
 const RETRY_BUSY_MS = 10 * 60 * 1000;
 
 function clampInteger(value, min, max, fallback) {
@@ -114,7 +116,16 @@ export class ScheduleService {
 
   jobActive(jobId) {
     const job = jobId ? this.store.getJob(jobId) : null;
-    return Boolean(job && ACTIVE.has(job.status));
+    return Boolean(job && RUNNING.has(job.status));
+  }
+
+  settleLastResult(item, now) {
+    if (item.lastResult?.status !== 'running' || !item.lastJobId) return false;
+    const job = this.store.getJob(item.lastJobId);
+    if (!job) { item.lastResult = { status: 'failed', message: '前回の定期保存の記録が見つかりません。', at: now.toISOString() }; return true; }
+    if (TERMINAL.has(job.status)) { item.lastResult = { status: job.status, message: job.status === 'cancelled' ? '前回の定期保存は中止されました。' : job.message || '前回の定期保存が終わりました。', at: now.toISOString() }; return true; }
+    if (STOPPED.has(job.status)) { item.lastResult = { status: 'stopped', message: '前回の定期保存が一時停止しています。保存タブから再開できます。', at: now.toISOString() }; return true; }
+    return false;
   }
 
   tick() {
@@ -127,6 +138,7 @@ export class ScheduleService {
     const now = this.now();
     let changed = false;
     for (const item of this.items) {
+      if (this.settleLastResult(item, now)) changed = true;
       if (!item.enabled || !item.nextRunAt || new Date(item.nextRunAt) > now) continue;
       changed = true;
       if (!this.store.getArchive(item.archiveId)) {

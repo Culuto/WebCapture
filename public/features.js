@@ -4,7 +4,7 @@ import { translate } from './i18n.js';
 const WEEKDAYS = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
 const FREQUENCY_LABELS = { hourly: '毎時', daily: '毎日', weekly: '毎週' };
 const WATCH_INTERVAL_LABELS = { 15: '15分ごと', 60: '1時間ごと', 180: '3時間ごと', 360: '6時間ごと', 720: '12時間ごと', 1440: '1日ごと', 10080: '1週間ごと' };
-const BATCH_ENTRY_LABELS = { pending: '順番待ち', running: '保存中', done: '保存済み', failed: '失敗', skipped: '取り消し' };
+const BATCH_ENTRY_LABELS = { pending: '順番待ち', running: '保存中', done: '保存済み', failed: '失敗', skipped: '取り消し', paused: '一時停止' };
 const BATCH_STATUS_LABELS = { running: '実行中', cancelling: '取り消し中', done: '完了', cancelled: '取り消し済み' };
 
 export function initFeatures(ctx) {
@@ -778,9 +778,12 @@ export function initFeatures(ctx) {
       $('#replay-find-count').textContent = '';
       syncViewToggle();
       ctx.applyReplayViewport();
+      const frame = $('#replay-frame');
+      if (local.findReload) frame.removeEventListener('load', local.findReload);
+      local.findReload = null;
       if (!$('#replay-find-bar').hidden && local.findQuery) {
-        const frame = $('#replay-frame');
-        frame.addEventListener('load', () => setTimeout(() => runFind('next'), 300), { once: true });
+        local.findReload = () => { local.findReload = null; setTimeout(() => runFind('next'), 300); };
+        frame.addEventListener('load', local.findReload, { once: true });
       }
     },
     onFindResult(data) {

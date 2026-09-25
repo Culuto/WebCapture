@@ -353,3 +353,65 @@ test('失敗理由への対処：原因ごとに対処ボタンと取り直し�
   assert.equal(retryOptionOverrides('retry-spaced').perHostIntervalMs, 5000);
   assert.deepEqual(retryOptionOverrides('unknown'), {});
 });
+
+test('容量の自動整理：共有されているアーカイブと、整理中のアーカイブへの保存・削除・後から保存を避ける', async (t) => {
+  const root = await tempRoot(t, 'cleanup-safety');
+  const store = await new VaultStore(root).init();
+  store.blobSharing = false;
+  await archiveFixture(store, 'archive_safe_shared', { savedAt: '2026-01-01T00:00:00.000Z', blobs: [['https://example.com/a.mp4', 'video-a', 'video/mp4']] });
+  await archiveFixture(store, 'archive_safe_old', { savedAt: '2026-02-01T00:00:00.000Z', blobs: [['https://example.com/b.mp4', 'video-b', 'video/mp4']] });
+  await archiveFixture(store, 'archive_safe_new', { savedAt: '2026-06-01T00:00:00.000Z' });
+  const service = await new StorageCleanupService({ dataRoot: root, store, isShared: (id) => id === 'archive_safe_shared' }).init();
+  service.settings.limitGb = 1e-9;
+  const plan = await service.buildPlan();
+  assert.deepEqual(plan.items.map((item) => item.archiveId), ['archive_safe_old'], 'ほかのアーカイブが共有しているものは整理案に入れない');
+  await assert.rejects(() => service.pruneArchive('archive_safe_shared'), /共有/);
+  const { CrawlManager } = await import('../server/crawler.mjs');
+  const { DeferredMediaService } = await import('../server/deferred-media.mjs');
+  const crawler = new CrawlManager(store, { defaultLimits: {} });
+  const media = new DeferredMediaService({ store, fetcher: async () => { throw new Error('no'); } });
+  let seenDuring = null;
+  const originalWrite = store.writeManifest.bind(store);
+  store.writeManifest = async (id, manifest) => {
+    seenDuring = { busy: crawler.archiveBusy(id), media: await media.start(id).then(() => 'started', (error) => error.code) };
+    return originalWrite(id, manifest);
+  };
+  await service.pruneArchive('archive_safe_old');
+  assert.deepEqual(seenDuring, { busy: true, media: 'ARCHIVE_BUSY' }, '整理中は取り直しや後から保存を始めない');
+  assert.equal(crawler.archiveBusy('archive_safe_old'), false, '終わったら解除する');
+});
+
+test('定期保存・まとめて保存：一時停止や中止で止まったままにならない', async (t) => {
+  const root = await tempRoot(t, 'stall');
+  const store = await new VaultStore(root).init();
+  await archiveFixture(store, 'archive_stall');
+  let now = new Date(2026, 8, 25, 10, 0, 0);
+  const started = [];
+  const crawler = { archiveBusy: () => false, resaveArchive: async () => { const job = await store.addJob({ startUrl: 'https://example.com/', options: {} }); started.push(job); return job; } };
+  const service = await new ScheduleService({ dataRoot: root, store, crawler, now: () => now }).init();
+  await service.upsert('archive_stall', { frequency: 'hourly', minute: 30 });
+  now = new Date(2026, 8, 25, 10, 31, 0);
+  await service.tick();
+  assert.equal(started.length, 1);
+  await store.updateJob(started[0].id, { status: 'paused' });
+  now = new Date(2026, 8, 25, 11, 31, 0);
+  await service.tick();
+  assert.equal(started.length, 2, '前回が一時停止のままでも次の予定は実行する');
+  await store.updateJob(started[1].id, { status: 'cancelled' });
+  now = new Date(2026, 8, 25, 11, 40, 0);
+  await service.tick();
+  assert.match(service.list()[0].lastResult.message, /中止/, '中止された結果も記録する');
+
+  const jobs = new Map();
+  const queue = await new BatchQueue({
+    dataRoot: root, store: { getJob: (id) => jobs.get(id) },
+    startJob: async () => { const job = { id: `job_${jobs.size}`, archiveId: 'x', status: 'running' }; jobs.set(job.id, job); return job; }
+  }).init();
+  const { batch } = await queue.create({ text: 'https://example.com/1\nhttps://example.com/2' });
+  await queue.tick();
+  jobs.get('job_0').status = 'paused';
+  await queue.tick();
+  const summary = queue.list().find((item) => item.id === batch.id);
+  assert.equal(summary.paused, 1);
+  assert.equal(summary.running, 1, '一時停止したら次のURLへ進む');
+});
