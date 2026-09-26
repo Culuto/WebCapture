@@ -5,6 +5,7 @@ import { logEvent, safeUrl } from './logger.mjs';
 const TERMINAL = new Set(['complete', 'complete-with-errors', 'cancelled', 'limit-reached', 'failed', 'blocked', 'login-required']);
 const STOPPED = new Set(['paused', 'warning', 'discovered']);
 export const MAX_BATCH_URLS = 500;
+const MAX_KEPT_BATCHES = 50;
 
 export function parseUrlList(text) {
   const values = String(text || '').split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
@@ -49,7 +50,14 @@ export class BatchQueue {
   }
 
   stop() { clearInterval(this.timer); this.timer = null; }
-  save() { return this.write({ items: this.items.slice(-50) }); }
+  save() {
+    const finished = this.items.filter((batch) => !['running', 'cancelling'].includes(batch.status));
+    if (finished.length > MAX_KEPT_BATCHES) {
+      const drop = new Set(finished.slice(0, finished.length - MAX_KEPT_BATCHES));
+      this.items = this.items.filter((batch) => !drop.has(batch));
+    }
+    return this.write({ items: this.items });
+  }
 
   summary(batch) {
     const count = (status) => batch.entries.filter((entry) => entry.status === status).length;

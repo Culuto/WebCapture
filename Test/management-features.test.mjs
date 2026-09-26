@@ -474,3 +474,15 @@ test('容量の自動整理：使用量の集計は短い間は使い回し、�
   await fs.writeFile(path.join(store.archiveRoot('archive_usage'), 'extra2.bin'), Buffer.alloc(1024));
   assert.equal(await service.usage(), first + 4096 + 1024, '時間が経てば数え直す');
 });
+
+test('まとめて保存：終わった予約の履歴は50件まで残し、実行中の予約は消さない', async (t) => {
+  const root = await tempRoot(t, 'batch-trim');
+  const queue = await new BatchQueue({ dataRoot: root, store: { getJob: () => null }, startJob: async () => ({ id: 'job', archiveId: 'a' }) }).init();
+  queue.items = [{ id: 'batch_running', status: 'running', entries: [] }, ...Array.from({ length: 60 }, (_, index) => ({ id: `batch_${index}`, status: 'done', entries: [] }))];
+  await queue.save();
+  assert.equal(queue.items.length, 51);
+  assert.equal(queue.items[0].id, 'batch_running');
+  assert.equal(queue.items.at(-1).id, 'batch_59', '新しい履歴を残す');
+  const reloaded = await new BatchQueue({ dataRoot: root, store: { getJob: () => null }, startJob: async () => ({}) }).init();
+  assert.equal(reloaded.items.length, 51);
+});

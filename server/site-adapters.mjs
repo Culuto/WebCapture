@@ -100,6 +100,29 @@ function graphqlOperation(url) {
   return match ? match[1] : null;
 }
 
+const graphqlSourceCache = new WeakMap();
+
+export function graphqlSources(manifest, method) {
+  let cached = graphqlSourceCache.get(manifest);
+  if (!cached) { cached = {}; graphqlSourceCache.set(manifest, cached); }
+  const key = method === 'POST' ? 'post' : 'get';
+  if (cached[key]) return cached[key];
+  const byOperation = new Map();
+  const entries = method === 'POST' ? Object.values(manifest.postResponses || {}) : Object.values(manifest.resources || {});
+  for (const entry of entries) {
+    if (!entry?.url || !entry.file || Number(entry.status) >= 400 || !entry.url.includes('/graphql/')) continue;
+    let parsed;
+    try { parsed = new URL(entry.url); } catch { continue; }
+    const operation = graphqlOperation(parsed);
+    if (!operation || !X_HOSTS.test(parsed.hostname)) continue;
+    const list = byOperation.get(operation) || [];
+    list.push({ url: entry.url, parsed, entry, request: entry.requestFile || null });
+    byOperation.set(operation, list);
+  }
+  cached[key] = byOperation;
+  return byOperation;
+}
+
 async function xResponse(target, { manifest, method, body, readFile }) {
   const operation = graphqlOperation(target);
   if (!operation) return null;
@@ -107,14 +130,9 @@ async function xResponse(target, { manifest, method, body, readFile }) {
     ? canonicalGraphqlVariables(parseJsonBody(body)?.variables)
     : canonicalGraphqlVariables(target.searchParams.get('variables'));
   if (!wanted) return null;
-  const sources = method === 'POST'
-    ? Object.values(manifest.postResponses || {}).map((entry) => ({ url: entry.url, entry, request: entry.requestFile }))
-    : Object.values(manifest.resources || {}).map((entry) => ({ url: entry.url, entry }));
+  const sources = graphqlSources(manifest, method).get(operation) || [];
   for (const source of sources) {
-    let candidate;
-    try { candidate = new URL(source.url); } catch { continue; }
-    if (!X_HOSTS.test(candidate.hostname) || graphqlOperation(candidate) !== operation) continue;
-    if (Number(source.entry.status) >= 400 || !source.entry.file) continue;
+    const candidate = source.parsed;
     let variables = null;
     if (method === 'POST') {
       if (!source.request) continue;

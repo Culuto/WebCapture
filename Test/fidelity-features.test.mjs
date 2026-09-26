@@ -7,7 +7,7 @@ import path from 'node:path';
 import { VaultStore } from '../server/store.mjs';
 import { createReplayHandler } from '../server/replay.mjs';
 import { scriptReferencesIn, prefetchCandidates, prefetchScriptReferences } from '../server/script-prefetch.mjs';
-import { siteReplayResponse, extractAssignedJson, canonicalGraphqlVariables } from '../server/site-adapters.mjs';
+import { siteReplayResponse, extractAssignedJson, canonicalGraphqlVariables, graphqlSources } from '../server/site-adapters.mjs';
 import { sanitizeCaptureOptions } from '../server/capture-options.mjs';
 import { captureWithBrowser, createBrowserCaptureSession, findBrowser, freePort, mobileBrowserIdentity } from '../server/browser-capture.mjs';
 import { ReplayAuditManager, createLocalAuditBrowser } from '../server/replay-auditor.mjs';
@@ -337,4 +337,19 @@ test('実際のChrome：保存処理でスマホ表示と読み込まれなか�
   assert.match(await replayed.text(), /phone layout/);
   const lazy = await fetch(`${base}/archive/${job.archiveId}/web/${startUrl}lazy-menu.js`);
   assert.equal(lazy.status, 200);
+});
+
+test('サイト別の再生補助：XのGraphQL応答は操作ごとの索引を1回だけ作り、失敗や別サイトの応答は入れない', () => {
+  const manifest = { resources: {
+    a: { url: 'https://x.com/i/api/graphql/A/UserTweets?variables=%7B%7D', status: 200, file: 'f1' },
+    b: { url: 'https://x.com/i/api/graphql/B/UserTweets?variables=%7B%22a%22%3A1%7D', status: 200, file: 'f2' },
+    c: { url: 'https://x.com/i/api/graphql/C/TweetDetail?variables=%7B%7D', status: 404, file: 'f3' },
+    d: { url: 'https://api.example.com/graphql/D/UserTweets?variables=%7B%7D', status: 200, file: 'f4' },
+    e: { url: 'https://x.com/home', status: 200, file: 'f5' }
+  } };
+  const first = graphqlSources(manifest, 'GET');
+  assert.equal(graphqlSources(manifest, 'GET'), first, '同じmanifestでは作り直さない');
+  assert.deepEqual([...first.keys()], ['UserTweets']);
+  assert.equal(first.get('UserTweets').length, 2);
+  assert.equal(graphqlSources(manifest, 'POST').size, 0);
 });
