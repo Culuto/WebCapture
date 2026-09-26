@@ -9,6 +9,7 @@ import { captureWithBrowser, createBrowserCaptureSession, findBrowser } from './
 import { LiveViewHub } from './live-view.mjs';
 import { ConcurrencyTuner, OPTIMIZE_START } from './concurrency-tuner.mjs';
 import { buildIssueReport } from './issue-report.mjs';
+import { prefetchScriptReferences } from './script-prefetch.mjs';
 import { assertPublicUrl, classifyScope, isAccountLikeUrl, nextExternalDepth, normalizeUrl, redirectChainExternalDepth, registrableDomain, stableDocumentKey, warningForDepth } from './policy.mjs';
 import { createWarcAsync } from './warc.mjs';
 import { commitArchiveCapture } from './repair-transaction.mjs';
@@ -28,6 +29,13 @@ export function captureOptionsForScope(options, scope) {
   return overrides ? { ...options, ...overrides } : options;
 }
 const RETRYABLE_ERROR_CODES = new Set(['BROWSER_UNAVAILABLE', 'PAGE_NAVIGATION_FAILED', 'PAGE_CAPTURE_TIMEOUT', 'PAGE_STALLED', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT']);
+
+export function balancedConcurrency(pending, limit) {
+  const cap = Math.max(1, Math.trunc(Number(limit) || 1));
+  const total = Math.max(0, Math.trunc(Number(pending) || 0));
+  if (total <= cap) return cap;
+  return Math.max(1, Math.ceil(total / Math.ceil(total / cap)));
+}
 
 export function retryableDocumentStatus(status) {
   const value = Number(status) || 0;
@@ -555,6 +563,7 @@ export class CrawlManager {
   }
 
   archiveBusy(archiveId) {
+    if (this.store.maintenanceLocks?.has(archiveId)) return true;
     return this.jobsForArchive(archiveId).some((job) => ['queued', 'running', 'discovering', 'pausing', 'paused', 'warning'].includes(job.status));
   }
 
@@ -588,7 +597,7 @@ export class CrawlManager {
     return job;
   }
 
-  async retryArchive(archiveId, { loginProfileId = null, loginHosts = [], skipHosts = [], includeFailed = true } = {}) {
+  async retryArchive(archiveId, { loginProfileId = null, loginHosts = [], skipHosts = [], includeFailed = true, optionOverrides = {}, reason = '' } = {}) {
     if (this.archiveBusy(archiveId)) throw Object.assign(new Error('このアーカイブは保存中または一時停止中です。'), { code: 'ARCHIVE_BUSY', status: 409 });
     const manifest = await this.store.readManifest(archiveId);
     const archive = this.store.getArchive(archiveId);
@@ -599,10 +608,10 @@ export class CrawlManager {
     const queue = retryQueue(plan, { loginHosts, skipHosts, includeFailed });
     if (!queue.length && !plan.missingResourceCount) throw Object.assign(new Error('取り直す対象がありません。'), { code: 'NOTHING_TO_RETRY', status: 409 });
     const source = this.jobsForArchive(archiveId)[0] || null;
-    const options = { ...(source?.options || manifest.options || {}), retryLoginProfileId: wantsLogin ? loginProfileId : null, discoveryMode: 'immediate' };
+    const options = { ...(source?.options || manifest.options || {}), ...optionOverrides, retryLoginProfileId: wantsLogin ? loginProfileId : null, discoveryMode: 'immediate' };
     const job = await this.store.addRetryJob({ archiveId, startUrl: manifest.startUrl, options, queue, sourceJobId: source?.id || null, bytes: archive.bytes });
     await this.store.addArchive({ ...archive, status: 'running' });
-    logEvent('info', 'crawler', 'archive.retry.started', { archiveId, jobId: job.id, pages: queue.length, loginPages: queue.filter((item) => item.login).length, missingResources: plan.missingResourceCount });
+    logEvent('info', 'crawler', 'archive.retry.started', { archiveId, jobId: job.id, reason: reason || 'manual', overrides: Object.keys(optionOverrides), pages: queue.length, loginPages: queue.filter((item) => item.login).length, missingResources: plan.missingResourceCount });
     this.start(job.id);
     return job;
   }
@@ -1221,6 +1230,14 @@ export class CrawlManager {
             if (!await robotsAllows(item.normalized, { ...job.options, signal: controller.signal }, robotsCache)) return { ...item, blockedByRobots: true };
             const knownResourceUrls = new Set(Object.values(manifest.resources).filter(resource => resource.status < 400 && (resource.size > 0 || resource.emptyConfirmed || [204, 205].includes(resource.status))).map(resource => resource.url));
             const session = await getBrowserSession(sessionKindOf(item));
+            const acceptDocumentUrl = (documentUrl) => {
+              let finalUrl;
+              try { finalUrl = canonicalDocumentUrl(documentUrl); } catch { return true; }
+              if (finalUrl === item.normalized || classifyScope(job.startUrl, finalUrl, job.options) !== 'external') return true;
+              if (!job.options.followExternal) return false;
+              if (job.options.externalMaxDepth === null) return true;
+              return redirectChainExternalDepth({ startUrl: job.startUrl, requestedUrl: item.normalized, requestedExternalDepth: item.current.externalDepth, finalUrl, sameSiteKeywords: job.options.sameSiteKeywords }) <= job.options.externalMaxDepth;
+            };
             let capture;
             if (looksLikeFileUrl(item.normalized)) {
               live.phase('file');
@@ -1231,14 +1248,7 @@ export class CrawlManager {
                 capture = job.options.captureRendered && browser
                   ? await captureWithBrowser(item.normalized, {
                     ...captureOptionsForScope(job.options, item.current.scope), executable: browser, session: session || undefined, liveView: live, prepareProfile: preparerFor(item),
-                    acceptDocumentUrl: (documentUrl) => {
-                      let finalUrl;
-                      try { finalUrl = canonicalDocumentUrl(documentUrl); } catch { return true; }
-                      if (finalUrl === item.normalized || classifyScope(job.startUrl, finalUrl, job.options) !== 'external') return true;
-                      if (!job.options.followExternal) return false;
-                      if (job.options.externalMaxDepth === null) return true;
-                      return redirectChainExternalDepth({ startUrl: job.startUrl, requestedUrl: item.normalized, requestedExternalDepth: item.current.externalDepth, finalUrl, sameSiteKeywords: job.options.sameSiteKeywords }) <= job.options.externalMaxDepth;
-                    },
+                    acceptDocumentUrl,
                     timeoutMs: item.current.repair ? Math.round(job.options.requestTimeoutMs * 1.5) : job.options.requestTimeoutMs, responseMaxBytes: job.options.responseMaxBytes, signal: controller.signal,
                     diagnosticContext: { jobId: id, archiveId: job.archiveId, depth: item.current.depth }
                   })
@@ -1252,11 +1262,33 @@ export class CrawlManager {
               if (!capture.fileDocument && capture.engine === 'HTTP' && !/html|xml/i.test(capture.resources?.[0]?.mimeType || 'text/html')) capture.fileDocument = true;
             }
             captureFinished();
+            if (job.options.captureMobile && job.options.captureRendered && browser && !capture.fileDocument && capture.html && capture.engine !== 'HTTP') {
+              live.phase('mobile');
+              try {
+                const mobile = await captureWithBrowser(capture.url || item.normalized, {
+                  ...captureOptionsForScope(job.options, item.current.scope), executable: browser, session: session || undefined, prepareProfile: preparerFor(item),
+                  mobile: true, interactDuringCapture: false, hoverDuringCapture: false, acceptDocumentUrl,
+                  timeoutMs: Math.min(Number(job.options.requestTimeoutMs) || 30000, 120000), finalizeGraceMs: Math.min(Number(job.options.finalizeGraceMs) || 45000, 60000),
+                  responseMaxBytes: job.options.responseMaxBytes, signal: controller.signal,
+                  diagnosticContext: { jobId: id, archiveId: job.archiveId, depth: item.current.depth, view: 'mobile' }
+                });
+                capture.mobile = { url: mobile.url || capture.url || item.normalized, html: mobile.html, title: mobile.title, screenshot: mobile.screenshot, resources: mobile.resources || [], userAgent: mobile.userAgent, viewport: mobile.viewport, partial: Boolean(mobile.partial) };
+              } catch (error) {
+                if (controller.signal.aborted) throw error;
+                capture.blocked ||= [];
+                capture.blocked.push({ url: capture.url || item.normalized, reason: `スマホ表示を保存できません: ${error.message}` });
+                logEvent('warn', 'capture', 'page.mobile.failed', { jobId: id, archiveId: job.archiveId, pageUrl: safeUrl(item.normalized), message: error.message });
+              }
+            }
             live.phase('recovering');
             const recoveryOptions = { ...job.options, signal: controller.signal, knownResourceUrls };
             await recoverMissingSrcsetResources(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
             await recoverEmptyResourceBodies(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
             await recoverReferencedResources(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
+            if (job.options.prefetchScripts !== false && !capture.fileDocument) {
+              live.phase('prefetching');
+              await prefetchScriptReferences(capture, recoveryOptions, { jobId: id, archiveId: job.archiveId, depth: item.current.depth }, { fetcher: safeFetch });
+            }
             await completeMediaResources(capture, recoveryOptions, safeFetch, { jobId: id, archiveId: job.archiveId, depth: item.current.depth });
             return { ...item, capture };
           }), {
@@ -1390,6 +1422,17 @@ export class CrawlManager {
           if (retryableDocumentStatus(capturedStatus) && !repairPhase) tuner?.onError('capture', `HTTP ${capturedStatus}`);
           if (retryableDocumentStatus(capturedStatus) && scheduleRetry(current, normalized, `HTTP ${capturedStatus}`)) continue;
           manifest.engine ||= capture.engine;
+          if (capture.mobile?.resources?.length) {
+            const desktopKeys = new Set(capture.resources.map((resource) => { try { return normalizeUrl(resource.url); } catch { return resource.url; } }));
+            for (const resource of capture.mobile.resources) {
+              if (resource.type === 'Document' || resource.method === 'POST' || /^(?:data|blob|about):/i.test(String(resource.url || ''))) continue;
+              let key;
+              try { key = normalizeUrl(resource.url); } catch { continue; }
+              if (desktopKeys.has(key) || manifest.resources[key]) continue;
+              desktopKeys.add(key);
+              capture.resources.push({ ...resource, mobileOnly: true });
+            }
+          }
           const pageResources = [];
           const validResourceMap = new Map();
           const postEntries = new Map();
@@ -1510,6 +1553,20 @@ export class CrawlManager {
           if (capture.screenshot) {
             screenshotFile = await this.store.writeScreenshot(job.archiveId, `${String(job.pages + 1).padStart(5, '0')}.png`, capture.screenshot);
           }
+          let mobileEntry = null;
+          if (capture.mobile?.html) {
+            const mobileHtml = Buffer.from(capture.mobile.html);
+            const mobileBlob = await this.store.writeBlob(job.archiveId, mobileHtml);
+            const mobileScreenshot = capture.mobile.screenshot
+              ? await this.store.writeScreenshot(job.archiveId, `${String(job.pages + 1).padStart(5, '0')}-mobile.png`, capture.mobile.screenshot)
+              : null;
+            mobileEntry = {
+              ...(capture.mobile.url && capture.mobile.url !== finalUrl ? { url: capture.mobile.url } : {}),
+              html: mobileBlob.file, screenshot: mobileScreenshot, title: capture.mobile.title || '', userAgent: capture.mobile.userAgent || '',
+              viewport: capture.mobile.viewport || null, capturedAt: new Date().toISOString(), ...(capture.mobile.partial ? { partial: true } : {})
+            };
+            job.bytes += mobileHtml.length + (capture.mobile.screenshot?.length || 0);
+          }
           if (warcChunk.length) {
             batchWarcChunks.push(warcChunk);
           }
@@ -1557,7 +1614,8 @@ export class CrawlManager {
             depth: current.depth, scope: finalScope, externalDepth: effectiveExternalDepth, from: current.from, capturedAt: new Date().toISOString(),
             html: htmlBlob?.file || null, screenshot: screenshotFile, resources: pageResources, links,
             redirects: capture.redirects || [], preservation: capture.preservation || null, blocked: capture.blocked || [], quality: pageQuality,
-            ...(capture.fileDocument ? { file: true, mimeType: capture.resources?.[0]?.mimeType || 'application/octet-stream', size: capture.resources?.[0]?.body?.length || 0 } : {})
+            ...(capture.fileDocument ? { file: true, mimeType: capture.resources?.[0]?.mimeType || 'application/octet-stream', size: capture.resources?.[0]?.body?.length || 0 } : {}),
+            ...(mobileEntry ? { mobile: mobileEntry } : {})
           };
           if (capture.html && !capture.fileDocument) indexedPages.push({ url: finalUrl, title: pageEntry.title, html: capture.html });
           sharedIndexPages.push({ url: finalUrl, requestedUrl: normalized, capturedAt: pageEntry.capturedAt });
@@ -1676,7 +1734,7 @@ export class CrawlManager {
     const hostLastStart = new Map();
     const hostKeyOf = (value) => { try { return registrableDomain(new URL(value).hostname); } catch { return ''; } };
     const hostReadyAt = (key) => {
-      if ((!distributed && !repairPhase) || !key) return 0;
+      if (!distributed || !key) return 0;
       if ((hostActive.get(key) || 0) >= (repairPhase ? 1 : perHostLimit)) return Infinity;
       return (hostLastStart.get(key) || 0) + (repairPhase ? Math.max(2000, perHostIntervalMs) : perHostIntervalMs);
     };
@@ -1722,10 +1780,13 @@ export class CrawlManager {
       }
       return null;
     };
+    let lastThrottleKey = '';
     const launch = () => exclusive(async () => {
       let latest = null;
-      const poolLimit = repairPhase ? Math.min(3, concurrencyLimit) : concurrencyLimit;
-      while (!warningHit && !limitHit && !fatalError && job.status === 'running' && active.size < (tuner ? Math.min(poolLimit, tuner.capture) : poolLimit)) {
+      const poolLimit = repairPhase ? Math.min(concurrencyLimit, Math.max(3, Math.ceil(concurrencyLimit / 2))) : concurrencyLimit;
+      const tunedLimit = tuner ? Math.min(poolLimit, tuner.capture) : poolLimit;
+      const launchLimit = repairPhase ? tunedLimit : balancedConcurrency(active.size + job.queue.length, tunedLimit);
+      while (!warningHit && !limitHit && !fatalError && job.status === 'running' && active.size < launchLimit) {
         if (reached(job.pages, job.options.maxPages) || reached(job.bytes, job.options.maxBytes) || reached(Date.now() - started, job.options.maxDurationMs)) {
           limitHit = true;
           break;
@@ -1752,8 +1813,27 @@ export class CrawlManager {
         active.add(task);
         latest = item;
       }
+      const governorLimit = this.loadGovernor.capture.limit;
+      const waitingOnHost = distributed && active.size < launchLimit && job.queue.length > 0;
+      const throttle = {
+        configured: concurrencyLimit, limit: Math.min(launchLimit, governorLimit), running: active.size,
+        reasons: [
+          ...(repairPhase && poolLimit < concurrencyLimit ? ['repair'] : []),
+          ...(tuner && tuner.capture < poolLimit ? ['optimize'] : []),
+          ...(!repairPhase && launchLimit < tunedLimit ? ['balance'] : []),
+          ...(governorLimit < launchLimit ? ['low-impact'] : []),
+          ...(waitingOnHost ? ['per-host'] : [])
+        ]
+      };
+      const throttleKey = JSON.stringify({ ...throttle, running: undefined });
+      if (throttleKey !== lastThrottleKey) {
+        lastThrottleKey = throttleKey;
+        job.throttle = throttle;
+        if (!latest) await this.store.updateJob(id, { throttle });
+      }
       if (latest) {
         await this.store.updateJob(id, {
+          throttle: job.throttle,
           inFlight: job.inFlight, currentUrl: latest.normalized,
           depth: Math.max(...job.inFlight.map((item) => item.depth || 0)),
           message: active.size > 1 ? `${active.size}ページを並列保存中` : 'ページを保存中'
@@ -1923,7 +2003,7 @@ export class CrawlManager {
       logEvent('info', 'archive', 'created', { archiveId: archive.id, jobId: id, status: archive.status, pages: archive.pages, resources: archive.resources, bytes: archive.bytes });
       if (finalStatus !== 'cancelled') {
         const report = buildIssueReport(manifest);
-        Promise.resolve(this.config.onJobFinished?.({ jobId: id, archiveId: archive.id, startUrl: job.startUrl, title: archive.title, status: finalStatus, pages: archive.pages, problemCount: report.problemCount })).catch(() => {});
+        Promise.resolve(this.config.onJobFinished?.({ jobId: id, archiveId: archive.id, startUrl: job.startUrl, title: archive.title, status: finalStatus, pages: archive.pages, problemCount: report.problemCount, message: this.store.getJob(id)?.message || '' })).catch(() => {});
       }
     } else if (['paused', 'warning'].includes(finalStatus)) {
       await this.publishInterruptedArchive(id, manifest);

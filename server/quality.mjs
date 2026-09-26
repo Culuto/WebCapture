@@ -210,6 +210,8 @@ export function unresolvedCaptureFailures(manifest = {}) {
 export function completionStatus(job = {}, manifest = {}) {
   const pages = Array.isArray(manifest.pages) ? manifest.pages : [];
   if (!Number(job.pages || pages.length)) {
+    const browserFailure = (manifest.blocked || []).find((item) => /ブラウザ（[^）]*）を起動できませんでした|ブラウザがキャプチャ開始前に終了/.test(String(item?.reason || '')));
+    if (browserFailure) return { status: 'failed', message: `保存できたページがありません。${browserFailure.reason}` };
     return { status: 'failed', message: '保存できたページがありません。エラー内容を確認してください。' };
   }
   const scope = startSiteScope(manifest);

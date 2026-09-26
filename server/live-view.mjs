@@ -1,5 +1,6 @@
 const VIEWER_TTL_MS = 5000;
 const MIN_FRAME_INTERVAL_MS = 200;
+const IDLE_PHASES = new Set(['done', 'failed', 'skipped', 'shared', 'idle']);
 const PHASE_LABELS = Object.freeze({
   waiting: '順番待ち',
   opening: 'ページを開いています',
@@ -11,6 +12,8 @@ const PHASE_LABELS = Object.freeze({
   interacting: 'ボタンやメニューを確認中',
   reading: '素材を記録中',
   recovering: '足りない素材を補完中',
+  mobile: 'スマホ表示を保存中',
+  prefetching: '読み込まれなかった部品を先取り保存中',
   http: 'HTTPで取得中（画面なし）',
   file: 'ファイルとして保存中（画面なし）',
   done: '保存完了',
@@ -104,10 +107,10 @@ export class LiveViewHub {
     const count = Math.max(slotCount, ...[...slots.keys()].map((index) => index + 1), 0);
     return Array.from({ length: count }, (_, index) => {
       const slot = slots.get(index);
-      if (!slot) return { index, url: '', title: '', phase: 'idle', phaseLabel: '待機中', frameSeq: 0, hasFrame: false };
+      if (!slot) return { index, url: '', title: '', phase: 'idle', phaseLabel: '待機中', frameSeq: 0, hasFrame: false, busy: false, idleMs: null };
       return {
         index, url: slot.url, title: slot.title, phase: slot.phase, phaseLabel: livePhaseLabel(slot.phase),
-        frameSeq: slot.frameSeq, hasFrame: Boolean(slot.frame)
+        frameSeq: slot.frameSeq, hasFrame: Boolean(slot.frame), busy: !IDLE_PHASES.has(slot.phase), idleMs: Math.max(0, this.now() - slot.updatedAt)
       };
     });
   }

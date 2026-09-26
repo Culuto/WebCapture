@@ -238,3 +238,57 @@
 影響を受ける可能性があるアプリ：MultiAppのランチャー（起動ファイル名・フォルダ名の変更）。それ以外に外部から使うアプリはない。
 
 テスト方法：`Test/rename-compat.test.mjs`、`Test/export-import.test.mjs`（旧 `.sitevault` の読み込み）。
+
+## 2026-09-25 v4.1.0（再現度・保存の継続管理・使い勝手の15機能）
+
+何を変更したか：既存APIのURL・送受信データの形・認証（Origin/Host/CSRF）は変更なし。APIと保存データの項目を追加しただけ。
+
+なぜ：保存したページの再現度を上げ、保存を続けて管理しやすくし、使い勝手を良くするため（`PLAN.md` の v4.1.0 計画）。
+
+### 管理APIの追加（すべて `127.0.0.1` のみ。変更系は従来どおり `x-webcapture-csrf` が必要）
+
+| API | 内容 |
+| --- | --- |
+| `GET /api/notifications?limit=`、`POST /api/notifications/read`（`{ ids? }`）、`POST /api/notifications/clear` | お知らせ（定期保存・見張り・容量整理・まとめて保存）。`{ items, unread }` |
+| `GET /api/schedules`、`GET/POST /api/archives/:id/schedule`、`DELETE /api/schedules/:scheduleId` | 定期保存。`{ frequency: 'hourly'|'daily'|'weekly', hour, minute, weekday, enabled }` |
+| `POST /api/archives/:id/meta`（`{ tags, folder, note }`）、`GET /api/archives/facets` | 整理。`GET /api/archives` に `folder`（`__none__`でフォルダなし）と `tag` の絞り込みを追加 |
+| `GET /api/pages/history?url=` | 同じページを含むアーカイブの一覧（新しい順） |
+| `GET/POST /api/watches`、`POST /api/watches/:id`（`{ enabled, intervalMinutes, label }`）、`POST /api/watches/:id/check`、`DELETE /api/watches/:id` | 変化の見張り。URLは保存と同じ公開アドレス検査を通す |
+| `GET/POST /api/storage/dedupe` | 既存の保存データの共有化（バックグラウンド実行と進み具合） |
+| `GET /api/storage/cleanup`、`POST /api/storage/cleanup/settings|plan|execute` | 容量の自動整理（設定・整理案・実行）。実行は整理案のIDが必要 |
+| `GET/POST /api/batches`（`{ text | urls, options }`）、`POST /api/batches/:id/cancel` | まとめて保存（最大500件、1件ずつ順番） |
+| `GET/POST /api/presets`、`DELETE /api/presets/:id` | 保存設定のプリセット（組み込みは削除不可） |
+| `GET /api/archives/:id/page-export?url=&format=png|pdf&view=desktop|mobile` | 表示中のページを画像・PDFで書き出し（ファイルを返す） |
+| `GET /api/archives/:id/visual?url=` | 見た目の比較の結果 |
+| `GET /api/archives/:id/image?path=` | スクリーンショットと比較画像だけを返す（`screenshots/NNNNN(-mobile).png`、`replay-audit/<run>/(screenshots|visual)/*.png` 以外は400） |
+| `POST /api/archives/:id/retry` に任意の `action`（`retry`/`retry-gentle`/`retry-spaced`） | 失敗理由に合わせた取り直し設定。省略時は従来どおり |
+| `GET /api/archives/:id/storage` の応答に `storage.shared`（`files`・`sharedFiles`・`sharedBytes`） | 共有されている素材の量 |
+
+### 保存オプションの追加（`POST /api/jobs` の `options`）
+- `captureMobile`（既定 false）：スマホ表示も保存する。
+- `prefetchScripts`（既定 true）：読み込まれなかった同じサイトの部品を先取り保存する。
+- 動画なしの保存は既存の `resourceTypes.media: false` を使う。
+
+### 保存データの項目追加（既存データはそのまま読める）
+- manifest の `pages[].mobile = { html, screenshot, title, userAgent, viewport, capturedAt }`、`prunedMedia`、`deferredMedia[].pruned`。
+- アーカイブ記録の `tags`・`folder`・`note`・`prunedAt`・`prunedMediaCount`・`warcRemoved`。
+- 表示検査の記録 `replay-audit.json` の `pages[].visual` と `summary.visualCompared`・`visualMismatchPages`・`visualAverage`（既存項目は維持）。
+- `data/` 直下の新しいファイル：`notifications.json`、`schedules.json`、`watches.json`、`batches.json`、`presets.json`、`cleanup.json`。
+- 素材の共有化はハードリンクで行うため、`blobs/` のファイルの場所・名前・内容、manifest の形は変わらない。
+
+### 再生サーバーの追加
+- `GET /archive/:id/page?...&view=mobile|desktop`：スマホ表示を保存したページはスマホ用HTMLを返す。指定は `webcapture_view` Cookieに残り、ページ内のリンク移動でも保たれる。応答ヘッダー `x-webcapture-view`。
+- 保存漏れの素材・送信応答のうち、YouTube（`/youtubei/v1/player|next|browse`）・X（GraphQL）・Shopify（`/products/*.js|json`、`/cart.js|json`）を保存済みデータから組み立てて返す。応答ヘッダー `x-webcapture-site-adapter`。IDが違う応答は代用しない。
+- 再生iframeへの通知 `{ type: 'webcapture-find', query, direction }` と、iframeからの返事 `webcapture-find-result`（`count`・`index`）を追加（ページ内検索）。
+
+影響を受ける可能性があるアプリ：なし（外部から使うアプリはない。MultiAppランチャーの起動方法は変わらない）。
+
+他アプリ側で必要な対応：なし。
+
+互換性維持の方法：追加のみ。未知の項目は無視できる。旧バージョンで保存したアーカイブ・書き出しファイルもそのまま開ける。
+
+テスト方法：`Test/management-features.test.mjs`、`Test/fidelity-features.test.mjs`、`Test/feature-api.test.mjs`、`Test/replay-auditor.test.mjs`。
+
+変更しないと起きる問題：なし（機能追加）。
+
+補足（レビュー対応）：`GET /api/archives/:id/page-export` はほかのサイトから呼ばれた場合（`Origin`不一致、`Sec-Fetch-Site: cross-site`）に403を返す。容量の整理は、ほかのアーカイブから共有されているアーカイブを対象にせず、整理中のアーカイブへの取り直し・続き・後から保存・削除を409で断る。Windows通知の文面は、PowerShellが引用符とみなす全角の記号も無害にする。

@@ -1,6 +1,6 @@
 import { WEBAUTHN_GUARD_SOURCE } from './webauthn-guard.mjs';
 import { deferSnapshotShadowRoots, installShadowFallback } from './shadow-fallback.mjs';
-import { installCollapseGuard, installStyleUrlRewrite } from './replay-runtime.mjs';
+import { installCollapseGuard, installFindInPage, installMobileIdentity, installStyleUrlRewrite } from './replay-runtime.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { normalizeUrl, savedPageForMissingUrl } from './policy.mjs';
@@ -12,6 +12,34 @@ import { charsetFromContentType, decodeStoredText, isTextualType, storedTextChar
 import { findPostResponse, findSimilarPostResponse, sortJsonKeys } from './post-archive.mjs';
 import { installArchivedClock, installSeededRandom, pageSeed } from './determinism.mjs';
 import { archiveIdFromReplayHost, archiveReplayHost } from '../public/replay-origin.js';
+import { siteReplayResponse } from './site-adapters.mjs';
+
+const adapterHtmlCache = new Map();
+let adapterHtmlBytes = 0;
+const ADAPTER_HTML_LIMIT = 32 * 1024 * 1024;
+
+function adapterPageReader(store, archiveId) {
+  return async (page) => {
+    const key = `${archiveId}:${page.html}`;
+    const cached = adapterHtmlCache.get(key);
+    if (cached !== undefined) {
+      adapterHtmlCache.delete(key);
+      adapterHtmlCache.set(key, cached);
+      return cached;
+    }
+    const html = await fs.readFile(path.join(store.archiveRoot(archiveId), page.html), 'utf8').catch(() => '');
+    if (html.length <= ADAPTER_HTML_LIMIT / 4) {
+      adapterHtmlCache.set(key, html);
+      adapterHtmlBytes += html.length;
+      while (adapterHtmlBytes > ADAPTER_HTML_LIMIT && adapterHtmlCache.size) {
+        const [oldest, value] = adapterHtmlCache.entries().next().value;
+        adapterHtmlCache.delete(oldest);
+        adapterHtmlBytes -= value.length;
+      }
+    }
+    return html;
+  };
+}
 
 const assetAttributeNames = ['src', 'poster', 'data-src', ...IMAGE_SOURCE_ATTRIBUTES].join('|');
 const quotedAssetAttributes = new RegExp(`(^|\\s)(${assetAttributeNames})\\s*=\\s*(["'])(.*?)\\3`, 'gi');
@@ -136,7 +164,8 @@ export function rewriteHtml(html, pageUrl, archiveId, options = {}, navigationId
   const scriptless = Boolean(context.light || context.still);
   if (scriptless) output = lightweightHtml(output, { pauseMotion: Boolean(context.light) });
   const collapseGuard = context.guard && !scriptless ? `(${installCollapseGuard.toString()})(archivePrefix+'page?url='+encodeURIComponent(pageUrl)+(navigationId?'&navigationId='+encodeURIComponent(navigationId):'')+'&mode=static',report);` : '';
-  const determinism = WEBAUTHN_GUARD_SOURCE + `(${installShadowFallback.toString()})(${scriptless});` + (context.seedUrl ? `(${installSeededRandom.toString()})(${pageSeed(context.seedUrl)});` : '') + (Number.isFinite(Date.parse(context.capturedAt || '')) ? `(${installArchivedClock.toString()})(${Date.parse(context.capturedAt)});` : '');
+  const mobileIdentity = context.mobileUserAgent ? `(${installMobileIdentity.toString()})(${JSON.stringify(String(context.mobileUserAgent))});` : '';
+  const determinism = mobileIdentity + WEBAUTHN_GUARD_SOURCE + `(${installShadowFallback.toString()})(${scriptless});` + (context.seedUrl ? `(${installSeededRandom.toString()})(${pageSeed(context.seedUrl)});` : '') + (Number.isFinite(Date.parse(context.capturedAt || '')) ? `(${installArchivedClock.toString()})(${Date.parse(context.capturedAt)});` : '');
   const bridge = `<script>${determinism}(function(){
     const pageUrl=${JSON.stringify(pageUrl)},baseUrl=${JSON.stringify(assetBaseUrl)},archiveId=${JSON.stringify(archiveId)},navigationId=${JSON.stringify(navigationId)};
     const parseSrcset=${parseSrcset.toString()};
@@ -148,6 +177,7 @@ export function rewriteHtml(html, pageUrl, archiveId, options = {}, navigationId
     const saved=u=>{const value=typeof u==='string'?u:(u&&u.url)||String(u||'');if(/^(?:data:|blob:|about:|#)/i.test(value))return value;try{const resolved=new URL(value,location.href);if(resolved.origin===location.origin&&resolved.pathname.startsWith(archivePrefix))return resolved.href}catch{}return archived(absolute(value))};
     const report=(type,data={})=>{try{parent.postMessage({type,archiveId,pageUrl,navigationId,...data},'*')}catch{}};
     (${installStyleUrlRewrite.toString()})(saved);
+    (${installFindInPage.toString()})(report);
     ${collapseGuard}
     const nativeAttachShadow=Element.prototype.attachShadow;
     if(nativeAttachShadow)Element.prototype.attachShadow=function(init){return (typeof window.__webcaptureRealShadowRoot==='function'?window.__webcaptureRealShadowRoot(this):this.shadowRoot)||nativeAttachShadow.call(this,init)};
@@ -398,6 +428,52 @@ export function findQueryVariantFallback(manifest, target) {
   return match ? { kind: 'query-variant', resource: match.resource } : null;
 }
 
+const imageVariantIndexes = new WeakMap();
+const SIZED_IMAGE_HOSTS = /(?:^|\.)(?:googleusercontent\.com|ggpht\.com)$/i;
+const YTIMG_HOSTS = /^i\d?\.ytimg\.com$/i;
+const YTIMG_PREFERENCE = ['maxresdefault', 'maxres2', 'sddefault', 'hq720', 'hqdefault', 'mqdefault', 'default'];
+
+export function imageVariantKey(value) {
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (SIZED_IMAGE_HOSTS.test(url.hostname)) {
+    const base = url.pathname.split('=')[0];
+    return base.length > 8 ? `sized:${url.hostname}${base}` : null;
+  }
+  if (YTIMG_HOSTS.test(url.hostname)) {
+    const match = url.pathname.match(/^\/(?:vi|vi_webp|an_webp)\/([A-Za-z0-9_-]{6,20})\/([A-Za-z0-9_]+)\.(?:jpg|jpeg|webp)$/);
+    return match ? `ytimg:${match[1]}` : null;
+  }
+  return null;
+}
+
+export function findImageVariantFallback(manifest, target) {
+  const key = imageVariantKey(target);
+  if (!key) return null;
+  let index = imageVariantIndexes.get(manifest);
+  if (!index) {
+    index = new Map();
+    for (const resource of Object.values(manifest.resources || {})) {
+      if (!(Number(resource.status) < 400) || !(resource.size > 0) || !resource.file) continue;
+      if (!/^image\//i.test(resource.mimeType || resource.headers?.['content-type'] || 'image/')) continue;
+      const resourceKey = imageVariantKey(resource.url);
+      if (!resourceKey) continue;
+      if (!index.has(resourceKey)) index.set(resourceKey, []);
+      index.get(resourceKey).push(resource);
+    }
+    imageVariantIndexes.set(manifest, index);
+  }
+  const candidates = index.get(key);
+  if (!candidates?.length) return null;
+  const rank = (resource) => {
+    const name = (() => { try { return new URL(resource.url).pathname.split('/').pop().replace(/\.\w+$/, ''); } catch { return ''; } })();
+    const preference = YTIMG_PREFERENCE.indexOf(name);
+    return preference >= 0 ? YTIMG_PREFERENCE.length - preference : 0;
+  };
+  const best = [...candidates].sort((a, b) => rank(b) - rank(a) || Number(b.size) - Number(a.size))[0];
+  return { kind: 'image-size-variant', resource: best };
+}
+
 export function findTypekitCompleteFontFallback(manifest, target) {
   try {
     const requested = new URL(target);
@@ -463,6 +539,15 @@ export function replayDocumentCsp(config) {
 }
 
 const REPLAY_COOKIE = 'webcapture_replay';
+const VIEW_COOKIE = 'webcapture_view';
+export const DEFAULT_MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
+
+function replayViewPreference(req, requestUrl) {
+  const requested = requestUrl.searchParams.get('view');
+  if (requested === 'mobile' || requested === 'desktop') return { view: requested, explicit: true };
+  const cookie = String(req.headers.cookie || '').split(';').map((part) => part.trim()).find((part) => part.startsWith(`${VIEW_COOKIE}=`));
+  return { view: cookie?.slice(VIEW_COOKIE.length + 1) === 'mobile' ? 'mobile' : 'desktop', explicit: false };
+}
 
 function replayCookie(archiveId, pageUrl) {
   const page = new URL(pageUrl);
@@ -589,8 +674,10 @@ export function createReplayHandler(store, config) {
         const message = replayFailureHtml('このページは保存されていません', target, archiveId, target, navigationId);
         return send(res, 404, { ...commonHeaders, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'", 'x-webcapture-missing-page': '1' }, message);
       }
+      const viewPreference = replayViewPreference(req, requestUrl);
+      const mobileView = viewPreference.view === 'mobile' && Boolean(page.mobile?.html);
       let html;
-      try { html = await fs.readFile(path.join(store.archiveRoot(archiveId), page.html), 'utf8'); }
+      try { html = await fs.readFile(path.join(store.archiveRoot(archiveId), mobileView ? page.mobile.html : page.html), 'utf8'); }
       catch (error) {
         if (error.code !== 'ENOENT') throw error;
         logEvent('error', 'replay', 'page.file.missing', { archiveId, pageUrl: safeUrl(target), code: 'HTML_FILE_NOT_FOUND' });
@@ -604,8 +691,9 @@ export function createReplayHandler(store, config) {
         ...commonHeaders,
         'content-type': 'text/html; charset=utf-8',
         'content-security-policy': replayDocumentCsp(config),
-        'set-cookie': replayCookie(archiveId, page.url)
-      }, rewriteHtml(html, page.url, archiveId, manifest.options, navigationId, { capturedAt: page.capturedAt, seedUrl: page.requestedUrl || page.url, light, still, guard: true }));
+        'x-webcapture-view': mobileView ? 'mobile' : 'desktop',
+        'set-cookie': viewPreference.explicit ? [replayCookie(archiveId, page.url), `${VIEW_COOKIE}=${viewPreference.view}; Path=/; SameSite=Lax`] : replayCookie(archiveId, page.url)
+      }, rewriteHtml(html, mobileView && page.mobile.url ? page.mobile.url : page.url, archiveId, manifest.options, navigationId, { capturedAt: mobileView ? page.mobile.capturedAt || page.capturedAt : page.capturedAt, seedUrl: page.requestedUrl || page.url, light, still, guard: true, mobileUserAgent: mobileView ? page.mobile.userAgent || DEFAULT_MOBILE_USER_AGENT : '' }));
     }
     if (match[2] === 'post') {
       let lookup = findPostResponse(manifest, {
@@ -621,6 +709,17 @@ export function createReplayHandler(store, config) {
           readRequestBody: (file) => readArchiveFile(store, archiveId, file)
         });
         if (similar.entry) lookup = similar;
+      }
+      if (!lookup.entry) {
+        const adapted = await siteReplayResponse({
+          manifest, target, method: 'POST', body: requestBody,
+          pageUrl: (() => { try { return decodeURIComponent(String(req.headers['x-webcapture-page'] || '')); } catch { return ''; } })() || currentReplayPage(req, lastPages)?.pageUrl || '',
+          readFile: (file) => fs.readFile(path.join(store.archiveRoot(archiveId), file)), readPageHtml: adapterPageReader(store, archiveId)
+        }).catch(() => null);
+        if (adapted) {
+          logEvent('info', 'replay', 'post.site-adapter.served', { archiveId, resourceUrl: safeUrl(target), adapter: adapted.adapter, bytes: adapted.body.length });
+          return send(res, adapted.status, { ...commonHeaders, 'content-type': adapted.contentType, 'content-length': adapted.body.length, 'x-webcapture-site-adapter': adapted.adapter }, adapted.body);
+        }
       }
       if (!lookup.entry && (isAuxiliaryRuntimeUrl(target) || isServerBoundaryUrl(target))) {
         logEvent('info', 'replay', 'post.auxiliary.disabled', { archiveId, resourceUrl: safeUrl(target), match: lookup.match });
@@ -647,7 +746,7 @@ export function createReplayHandler(store, config) {
       return send(res, postStatus, { ...commonHeaders, ...archivedStatus, 'content-type': postType, 'content-length': body.length, 'x-webcapture-post-match': lookup.match }, body);
     }
     const canonicalTarget = manifest.resourceAliases?.[target] || target;
-    const fallback = manifest.resources[canonicalTarget] ? null : findTypekitCompleteFontFallback(manifest, target) || findQueryVariantFallback(manifest, canonicalTarget);
+    const fallback = manifest.resources[canonicalTarget] ? null : findTypekitCompleteFontFallback(manifest, target) || findQueryVariantFallback(manifest, canonicalTarget) || findImageVariantFallback(manifest, canonicalTarget);
     const baseResource = manifest.resources[canonicalTarget] || fallback?.resource;
     const currentPage = currentReplayPage(req, lastPages);
     const variant = baseResource && currentPage?.archiveId === archiveId
@@ -675,6 +774,11 @@ export function createReplayHandler(store, config) {
       }, auxiliary.body);
     }
     if (!resource) {
+      const adapted = await siteReplayResponse({ manifest, target, method: 'GET', pageUrl: currentPage?.pageUrl || '', readFile: (file) => fs.readFile(path.join(store.archiveRoot(archiveId), file)), readPageHtml: adapterPageReader(store, archiveId) }).catch(() => null);
+      if (adapted) {
+        logEvent('info', 'replay', 'resource.site-adapter.served', { archiveId, resourceUrl: safeUrl(target), adapter: adapted.adapter, bytes: adapted.body.length });
+        return send(res, adapted.status, { ...commonHeaders, 'content-type': adapted.contentType, 'content-length': adapted.body.length, 'x-webcapture-site-adapter': adapted.adapter }, adapted.body);
+      }
       logEvent('warn', 'replay', 'resource.missing', { archiveId, resourceUrl: safeUrl(target), code: 'RESOURCE_NOT_FOUND' });
       if (req.headers['x-webcapture-replay-audit'] !== '1') await store.recordReplayMiss?.(archiveId, target).catch((error) => {
         logEvent('warn', 'replay', 'resource.missing.record.failed', { archiveId, code: error.code || 'WRITE_FAILED' });

@@ -3,7 +3,7 @@
 - UI: `http://127.0.0.1:43193/`
 - API Health: `GET http://127.0.0.1:43193/api/health`
 - 再生Origin: `http://127.0.0.1:43194`。管理UIと分離し、保存済み本文だけをsandbox iframeへ表示する。
-- 稼働確認: HTTP 200、`app=WebCapture`、`ready=true`、`version=4.0.0`、`replayReady=true`。
+- 稼働確認: HTTP 200、`app=WebCapture`、`ready=true`、`version=4.1.0`、`replayReady=true`。
 - AppDetail仕様: 同梱の `AppDetail/Appdetail.md`。`npm run appdetail:sync` でメタデータを同期する。
 - 通常起動: Node.jsサーバーを非表示で起動し、専用Chrome / Edgeアプリウィンドウを開く。バックグラウンド起動はサーバーのみ。
 - 通常終了: 起動制御は同一Origin/CSRF確認付きの終了APIを使用し、通信中断、未保存URL復元、ブラウザ終了、状態とログの書込みを待つ。所有確認済みプロセスの強制終了は通常終了できない場合の最終手段。

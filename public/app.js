@@ -4,6 +4,7 @@ import { hydrateIcons, setIcon } from './icon-system.js';
 import { createLiveView } from './live-view.js';
 import { readUiPrefs, writeUiPrefs, resolveTheme, urlPatternList } from './ui-prefs.js';
 import { applyLanguage } from './i18n.js';
+import { initFeatures } from './features.js';
 
 const state = {
   csrfToken: '', config: null, browser: null, jobs: [], archives: [], activeJobId: null,
@@ -15,6 +16,7 @@ const state = {
   metrics: null, load: null, replayAudit: null, replayAuditRequestToken: 0
 };
 
+let features = null;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const safeStorage = () => { try { return window.localStorage; } catch { return null; } };
@@ -236,6 +238,7 @@ function renderProgress() {
   $('#progress-region').hidden = !job;
   liveView.setJob(job);
   renderTuningStatus(job);
+  renderThrottleStatus(job);
   if (state.lastProgressJobId && !job) { loadAppSettings(); toast('保存が終わりました。結果はアーカイブ一覧で確認できます。'); uiLog('job.finished.noticed', { jobId: state.lastProgressJobId }); }
   state.lastProgressJobId = job?.id || null;
   renderPausedJobs();
@@ -343,8 +346,8 @@ function archiveTitle(archive) {
 }
 
 function archiveRenderSignature() {
-  const items = state.archives.map((archive) => [archive.id, archive.status, archive.pages, archive.resources, archive.bytes, archive.savedAt, archive.title, archive.startUrl, archive.quality?.level, archive.quality?.score].join('|')).join(';;');
-  return `${state.archiveFilter}\u0000${state.archiveTotal}\u0000${state.archiveHasMore}\u0000${state.selectedArchive?.id || ''}\u0000${state.archiveOpeningId || ''}\u0000${items}`;
+  const items = state.archives.map((archive) => [archive.id, archive.status, archive.pages, archive.resources, archive.bytes, archive.savedAt, archive.title, archive.startUrl, archive.quality?.level, archive.quality?.score, archive.folder || '', (archive.tags || []).join(',')].join('|')).join(';;');
+  return `${state.archiveFilter}\u0000${state.archiveFolder || ''}\u0000${state.archiveTag || ''}\u0000${state.archiveTotal}\u0000${state.archiveHasMore}\u0000${state.selectedArchive?.id || ''}\u0000${state.archiveOpeningId || ''}\u0000${items}`;
 }
 
 function renderArchives({ force = false } = {}) {
@@ -393,7 +396,13 @@ function renderArchives({ force = false } = {}) {
     if (state.archiveOpeningId === archive.id) { pickerButton.setAttribute('aria-busy', 'true'); pickerButton.disabled = true; }
     const title = document.createElement('strong'); title.textContent = archiveTitle(archive);
     const detail = document.createElement('span'); detail.textContent = `${statusLabel(archive.status)}・${archive.pages}ページ・${qualityLabel(archive.quality)}・${formatDate(archive.savedAt)}`;
-    pickerButton.append(title, detail); pickerButton.addEventListener('click', () => openArchive(archive.id)); pickerFragment.append(pickerButton);
+    pickerButton.append(title, detail);
+    if (archive.folder || archive.tags?.length) {
+      const organize = document.createElement('span'); organize.className = 'archive-organize-line';
+      organize.textContent = [archive.folder ? `フォルダ: ${archive.folder}` : '', ...(archive.tags || []).map((tag) => `#${tag}`)].filter(Boolean).join('  ');
+      pickerButton.append(organize);
+    }
+    pickerButton.addEventListener('click', () => openArchive(archive.id)); pickerFragment.append(pickerButton);
   }
   tbody.append(tableFragment); picker.append(pickerFragment);
   const loadMore = $('#archive-load-more');
@@ -431,7 +440,7 @@ function replayOriginFor(archiveId = state.selectedArchive?.id) {
 }
 
 function pageReplayUrl(archiveId, url, navigationId) {
-  return `${replayOriginFor(archiveId)}/archive/${encodeURIComponent(archiveId)}/page?url=${encodeURIComponent(url)}&navigationId=${encodeURIComponent(navigationId)}${state.replayLight ? '&mode=light' : state.staticReplayPages.has(`${archiveId} ${url}`) ? '&mode=static' : ''}`;
+  return `${replayOriginFor(archiveId)}/archive/${encodeURIComponent(archiveId)}/page?url=${encodeURIComponent(url)}&navigationId=${encodeURIComponent(navigationId)}&view=${state.replayView === 'mobile' ? 'mobile' : 'desktop'}${state.replayLight ? '&mode=light' : state.staticReplayPages.has(`${archiveId} ${url}`) ? '&mode=static' : ''}`;
 }
 
 function navigateReplay(url, push = true) {
@@ -457,6 +466,7 @@ function navigateReplay(url, push = true) {
   $('#replay-back').disabled = state.replayIndex <= 0;
   $('#replay-forward').disabled = state.replayIndex >= state.replayHistory.length - 1;
   highlightReplayPage(page?.url || canonicalUrl);
+  features?.onReplayNavigated(page || null, canonicalUrl);
   uiLog('replay.navigated', { archiveId: state.selectedArchive.id, url, navigationId, historyLength: state.replayHistory.length });
 }
 
@@ -764,6 +774,15 @@ async function startRetry() {
 function applyReplayViewport() {
   const frame = $('#replay-frame');
   const button = $('#replay-size');
+  const mobile = state.replayView === 'mobile' && Boolean(state.replayMobileAvailable);
+  frame.parentElement.classList.toggle('mobile-viewport', mobile);
+  if (mobile) {
+    button.disabled = true;
+    frame.parentElement.classList.remove('original-viewport');
+    frame.style.width = '390px';
+    frame.style.height = '';
+    return;
+  }
   const width = Number(state.manifest?.options?.viewportWidth);
   const height = Number(state.manifest?.options?.viewportHeight);
   const available = Number.isFinite(width) && width >= 320 && Number.isFinite(height) && height >= 200;
@@ -812,7 +831,19 @@ function renderIssueReport() {
       row.append(url, reason);
       return row;
     }));
-    details.append(summary, explanation, advice, examples);
+    details.append(summary, explanation, advice);
+    if (category.action && category.actionLabel) {
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = 'secondary icon-with-label issue-action';
+      action.dataset.action = category.action;
+      action.innerHTML = '<span data-icon="rotate-ccw" aria-hidden="true"></span><span></span>';
+      action.lastElementChild.textContent = category.actionLabel;
+      setIcon(action, 'rotate-ccw');
+      action.addEventListener('click', () => features?.runIssueAction(category.action, category.label));
+      details.append(action);
+    }
+    details.append(examples);
     details.addEventListener('toggle', () => uiLog('issue-report.toggled', { key: category.key, open: details.open }));
     item.append(details);
     return item;
@@ -1145,6 +1176,7 @@ async function openArchive(id, { pageUrl = '' } = {}) {
     state.replayHistory = []; state.replayIndex = -1; state.replayStatus = null;
     state.archiveOpeningId = null;
     renderArchiveDetail(); showView('archives');
+    features?.onArchiveOpened();
     const firstPage = (pageUrl && payload.manifest.pages?.find((page) => page.url === pageUrl)) || payload.manifest.pages?.find((page) => page.url === payload.manifest.startUrl || page.requestedUrl === payload.manifest.startUrl) || payload.manifest.pages?.[0];
     if (firstPage) navigateReplay(firstPage.url);
     else { $('#replay-frame').removeAttribute('src'); $('#replay-frame').setAttribute('aria-busy', 'false'); }
@@ -1177,7 +1209,7 @@ async function loadArchives({ append = false } = {}) {
   loadMore.disabled = true;
   loadMore.setAttribute('aria-busy', 'true');
   try {
-    const query = new URLSearchParams({ q: state.archiveFilter, offset: String(offset), limit: String(state.archivePageSize) });
+    const query = new URLSearchParams({ q: state.archiveFilter, offset: String(offset), limit: String(state.archivePageSize), folder: state.archiveFolder || '', tag: state.archiveTag || '' });
     const payload = await api(`/api/archives?${query}`);
     if (token !== state.archiveRequestToken) return;
     applyArchivePage(payload, { append });
@@ -1286,7 +1318,7 @@ const CAPTURE_DEFAULTS = Object.freeze({
 
 const activePresetConfig = CAPTURE_DEFAULTS;
 const CAPTURE_SETTINGS_KEY = 'webcapture.captureSettings';
-const REMEMBERED_FIELDS = ['media-strategy', 'media-speed', 'interaction-limit', 'interaction-mode', 'discovery-method', 'share-pages', 'external-max-depth', 'external-detail', 'media-max-bytes', 'discovery-mode', 'discovery-limit', 'concurrency', 'discovery-concurrency', 'per-host-concurrency', 'per-host-interval', 'distributed-access', 'auto-exclude-account', 'capture-rendered', 'respect-robots'];
+const REMEMBERED_FIELDS = ['save-media', 'capture-mobile', 'prefetch-scripts', 'media-strategy', 'media-speed', 'interaction-limit', 'interaction-mode', 'discovery-method', 'share-pages', 'external-max-depth', 'external-detail', 'media-max-bytes', 'discovery-mode', 'discovery-limit', 'concurrency', 'discovery-concurrency', 'per-host-concurrency', 'per-host-interval', 'distributed-access', 'auto-exclude-account', 'capture-rendered', 'respect-robots'];
 
 function saveCaptureSettings() {
   const fields = {};
@@ -1355,6 +1387,29 @@ function validateCaptureUrl(rawValue) {
   return '';
 }
 
+function captureFormOptions() {
+  const scope = new FormData($('#capture-form')).get('scope');
+  const advanced = captureAdvancedOptions();
+  return {
+    ...advanced,
+    resourceTypes: { ...advanced.resourceTypes, media: $('#save-media').checked },
+    captureMobile: $('#capture-mobile').checked,
+    prefetchScripts: $('#prefetch-scripts').checked,
+    followExternal: scope === 'external', respectRobots: $('#respect-robots').checked,
+    captureRendered: $('#capture-rendered').checked, sameSiteKeywords: uiPrefs.legacyKeywords ? sameSiteKeywords : [],
+    discoveryMode: $('#discovery-mode').value, discoveryPageLimit: Number($('#discovery-limit').value),
+    externalMaxDepth: $('#external-max-depth').value === 'unlimited' ? null : Number($('#external-max-depth').value),
+    concurrency: Number($('#concurrency').value),
+    externalDetail: $('#external-detail').value,
+    distributedAccess: $('#distributed-access').checked,
+    perHostConcurrency: Number($('#per-host-concurrency').value),
+    perHostIntervalMs: Number($('#per-host-interval').value),
+    autoExcludeAccountPages: $('#auto-exclude-account').checked,
+    loginProfileId: $('#login-profile').value || null,
+    sharePages: $('#share-pages').checked
+  };
+}
+
 $('#capture-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const submit = event.submitter || $('#capture-form button[type="submit"]');
@@ -1363,24 +1418,9 @@ $('#capture-form').addEventListener('submit', async (event) => {
   if (urlError) { $('#capture-url').focus(); uiLog('capture.validation.failed', { reason: urlError }, 'warning'); toast(urlError); return; }
   submit.disabled = true; submit.setAttribute('aria-busy', 'true');
   try {
-    const scope = new FormData(event.currentTarget).get('scope');
     const payload = await api('/api/jobs', { method: 'POST', body: JSON.stringify({
       url: $('#capture-url').value.trim(),
-      options: {
-        ...captureAdvancedOptions(),
-        followExternal: scope === 'external', respectRobots: $('#respect-robots').checked,
-        captureRendered: $('#capture-rendered').checked, sameSiteKeywords: uiPrefs.legacyKeywords ? sameSiteKeywords : [],
-        discoveryMode: $('#discovery-mode').value, discoveryPageLimit: Number($('#discovery-limit').value),
-        externalMaxDepth: $('#external-max-depth').value === 'unlimited' ? null : Number($('#external-max-depth').value),
-        concurrency: Number($('#concurrency').value),
-        externalDetail: $('#external-detail').value,
-        distributedAccess: $('#distributed-access').checked,
-        perHostConcurrency: Number($('#per-host-concurrency').value),
-        perHostIntervalMs: Number($('#per-host-interval').value),
-        autoExcludeAccountPages: $('#auto-exclude-account').checked,
-        loginProfileId: $('#login-profile').value || null,
-        sharePages: $('#share-pages').checked
-      }
+      options: captureFormOptions()
     }) });
     state.activeJobId = payload.job.id; toast('保存を開始しました。'); await refresh();
   } catch (error) { toast(error.message); uiLog('capture.start.failed', { message: error.message }, 'error'); } finally { submit.disabled = false; submit.removeAttribute('aria-busy'); }
@@ -1679,6 +1719,28 @@ function renderTuningStatus(job) {
   line.textContent = `最適化中：同時保存 ${tuning.capture}（開始${tuning.start?.capture ?? 30}）・構造把握 ${tuning.discovery}（開始${tuning.start?.discovery ?? 64}）・下げた回数 ${tuning.reductionCount || 0}${last ? `（直近: ${reason}で${last.kind === 'capture' ? '同時保存' : '構造把握'}を${last.to}へ）` : ''}`;
 }
 
+const THROTTLE_REASONS = Object.freeze({
+  'per-host': '同じサイトへの同時アクセスの上限（分散アクセス）で順番を待っています',
+  repair: '最後の取り直しは、相手サイトへの負担を抑えるため数を減らしています',
+  balance: '残りのページを均等に分けて、最後に1件だけ残らないようにしています',
+  'low-impact': '低負荷モードで、パソコンの負荷に合わせて減らしています',
+  optimize: '最適化モードで数を調整しています'
+});
+
+function renderThrottleStatus(job) {
+  const line = $('#throttle-status');
+  const throttle = job && ['running', 'queued'].includes(job.status) ? job.throttle : null;
+  const reasons = (throttle?.reasons || []).filter((reason) => THROTTLE_REASONS[reason]);
+  line.hidden = !reasons.length;
+  if (!reasons.length) return;
+  line.replaceChildren(...[`同時保存数 ${throttle.configured} のうち、今は最大 ${throttle.limit} で保存しています。`, ...reasons.map((reason) => THROTTLE_REASONS[reason])].map((text) => {
+    const span = document.createElement('span');
+    span.className = 'throttle-reason';
+    span.textContent = text;
+    return span;
+  }));
+}
+
 function syncOptimizeSwitch(settings) {
   const enabled = settings.optimizeMode === true;
   $('#optimize-mode').checked = enabled;
@@ -1905,6 +1967,7 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (event.data?.type === 'webcapture-heartbeat') { state.replayBeatAt = Date.now(); return; }
+  if (event.data?.type === 'webcapture-find-result') { features?.onFindResult(event.data); return; }
   if (event.data?.type === 'webcapture-heavy') {
     uiLog('replay.heavy', { archiveId: state.selectedArchive.id, busy: event.data.busy, memory: event.data.memory }, 'warn');
     if (!state.replayLight) showHeavyNotice(`このページは処理が重い（CPU ${Number(event.data.busy) || 0}%${event.data.memory ? `・メモリ ${Number(event.data.memory)}MB` : ''}）。軽量表示にすると、スクリプトと動きを止めて表示します。`);
@@ -2040,7 +2103,12 @@ hydrateIcons();
 await refresh();
 syncExternalOptions();
 syncDiscoveryOptions();
-uiLog('application.ready', { version: '4.0.0' });
+features = initFeatures({
+  state, $, $$, api, toast, uiLog, setIcon, hydrateIcons, formatBytes, formatDate, archiveTitle, statusLabel,
+  openArchive, navigateReplay, confirmAction, refresh, loadArchives, showView, openRetryDialog, applyReplayViewport, replayOriginFor,
+  captureFormOptions, saveCaptureSettings, syncDiscoveryOptions, syncExternalOptions, syncScopeToggle, validateCaptureUrl
+});
+uiLog('application.ready', { version: '4.1.0' });
 logVisibleButtons();
 async function poll() {
   await refresh();

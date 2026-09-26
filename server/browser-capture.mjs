@@ -51,11 +51,48 @@ export function platformBrowserArgs(platform = process.platform) {
   return platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0 ? ['--no-sandbox'] : [];
 }
 
-export async function findBrowser() {
+const BROWSER_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
+const browserStartFailures = new Map();
+
+export function noteBrowserStartFailure(executable, at = Date.now()) {
+  if (executable) browserStartFailures.set(executable, at);
+}
+
+export function clearBrowserStartFailures() { browserStartFailures.clear(); }
+
+function recentlyFailed(executable, now = Date.now()) {
+  const at = browserStartFailures.get(executable);
+  if (!at) return false;
+  if (now - at < BROWSER_FAILURE_COOLDOWN_MS) return true;
+  browserStartFailures.delete(executable);
+  return false;
+}
+
+export async function findBrowsers() {
+  const found = [];
   for (const file of browserCandidates()) {
-    try { await fs.access(file); return file; } catch {}
+    if (found.includes(file)) continue;
+    try { await fs.access(file); found.push(file); } catch {}
   }
-  return null;
+  return found;
+}
+
+export async function findBrowser() {
+  const found = await findBrowsers();
+  return found.find((file) => !recentlyFailed(file)) || found[0] || null;
+}
+
+export async function pendingBrowserUpdate(executable) {
+  if (!executable || !/chrome\.exe$/i.test(executable)) return false;
+  try { await fs.access(path.join(path.dirname(executable), 'new_chrome.exe')); return true; } catch { return false; }
+}
+
+export function browserStartOrder(executable, installed = [], now = Date.now()) {
+  const others = installed.filter((file) => file !== executable);
+  const healthy = others.filter((file) => !recentlyFailed(file, now));
+  const failing = others.filter((file) => recentlyFailed(file, now));
+  if (recentlyFailed(executable, now) && healthy.length) return [...healthy, executable, ...failing];
+  return [executable, executable, ...healthy, ...failing];
 }
 
 export async function freePort() {
@@ -367,12 +404,16 @@ export async function captureWithBrowser(url, options = {}) {
     await Promise.all([
       client.send('Page.enable'), client.send('Runtime.enable'), client.send('Network.enable', networkParams),
       client.send('Network.setCacheDisabled', { cacheDisabled: options.disableBrowserCache !== false }),
-      client.send('Emulation.setDeviceMetricsOverride', {
+      client.send('Emulation.setDeviceMetricsOverride', options.mobile ? {
+        width: MOBILE_CAPTURE_VIEWPORT.width, height: MOBILE_CAPTURE_VIEWPORT.height,
+        deviceScaleFactor: MOBILE_CAPTURE_VIEWPORT.deviceScaleFactor, mobile: true
+      } : {
         width: options.viewportWidth || 1440, height: options.viewportHeight || 1000,
         deviceScaleFactor: options.deviceScaleFactor || 1, mobile: false
       }),
+      options.mobile ? client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }).catch(() => {}) : null,
       client.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }),
-      session.userAgent ? client.send('Network.setUserAgentOverride', userAgentOverride(session)) : null,
+      session.userAgent || options.mobile ? client.send('Network.setUserAgentOverride', userAgentOverride(session, options.mobile)) : null,
       client.send('WebAuthn.enable', { enableUI: false }).catch(() => {})
     ]);
     live = startLiveScreencast(client, options.liveView);
@@ -480,7 +521,7 @@ export async function captureWithBrowser(url, options = {}) {
             client.send('Network.enable', networkParams, 30000, sessionId),
             client.send('Network.setCacheDisabled', { cacheDisabled: options.disableBrowserCache !== false }, 30000, sessionId),
             kind === 'iframe' ? client.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, 30000, sessionId) : null,
-            session.userAgent ? client.send('Network.setUserAgentOverride', userAgentOverride(session), 30000, sessionId).catch(() => {}) : null,
+            session.userAgent || options.mobile ? client.send('Network.setUserAgentOverride', userAgentOverride(session, options.mobile), 30000, sessionId).catch(() => {}) : null,
             kind === 'iframe' ? client.send('Page.enable', {}, 30000, sessionId) : null,
             kind === 'iframe' ? client.send('Page.addScriptToEvaluateOnNewDocument', { source: WEBAUTHN_GUARD_SOURCE }, 30000, sessionId).catch(() => {}) : null,
             kind === 'iframe' ? client.send('WebAuthn.enable', { enableUI: false }, 30000, sessionId).catch(() => {}) : null,
@@ -795,7 +836,8 @@ export async function captureWithBrowser(url, options = {}) {
     }
     return {
       ...state, resources, redirects, preservation, blocked, partial: timedOut,
-      screenshot: screenshot ? Buffer.from(screenshot.data, 'base64') : null, engine: path.basename(executable)
+      screenshot: screenshot ? Buffer.from(screenshot.data, 'base64') : null, engine: path.basename(executable),
+      ...(options.mobile ? { userAgent: mobileBrowserIdentity(session).userAgent, viewport: { ...MOBILE_CAPTURE_VIEWPORT } } : {})
     };
   } finally {
     clearTimeout(hardTimeout);
@@ -826,38 +868,100 @@ export function regularBrowserIdentity(version, executable = '') {
   };
 }
 
-function userAgentOverride(session) {
+export const MOBILE_CAPTURE_VIEWPORT = Object.freeze({ width: 390, height: 844, deviceScaleFactor: 2 });
+
+export function mobileBrowserIdentity(session = {}) {
+  const base = String(session.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36');
+  const userAgent = base.replace(/\([^)]*\)/, '(Linux; Android 10; K)').replace(/ Edg\/[\d.]+/, '').replace(/(Chrome\/[\d.]+) (?:Mobile )?Safari/, '$1 Mobile Safari');
+  const metadata = session.userAgentMetadata || {};
+  return {
+    userAgent,
+    userAgentMetadata: { ...metadata, platform: 'Android', platformVersion: '10.0.0', architecture: '', model: 'K', mobile: true, bitness: '', wow64: false }
+  };
+}
+
+function userAgentOverride(session, mobile = false) {
+  if (mobile) {
+    const identity = mobileBrowserIdentity(session);
+    return { userAgent: identity.userAgent, acceptLanguage: 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7', platform: 'Linux armv8l', userAgentMetadata: identity.userAgentMetadata };
+  }
   return { userAgent: session.userAgent, acceptLanguage: 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7', platform: 'Win32', userAgentMetadata: session.userAgentMetadata };
 }
 
-export async function createBrowserCaptureSession(options = {}) {
-  const executable = options.executable || await findBrowser();
-  if (!executable) throw new Error('ChromeまたはEdgeが見つかりません。');
-  const proxy = await createPolicyProxy({ policyOptions: options.policyOptions });
+async function launchBrowserProcess(executable, options, proxy) {
   const port = await freePort();
   const profile = options.userDataDir || await fs.mkdtemp(path.join(os.tmpdir(), 'webcapture-browser-'));
   const keepProfile = Boolean(options.userDataDir);
-  if (!keepProfile && typeof options.prepareProfile === 'function') await options.prepareProfile(profile);
   const diagnostics = { stderr: '', spawnError: null };
-  const handle = childProcess.spawn(executable, [
-    ...platformBrowserArgs(), '--headless=new', '--disable-gpu', '--disable-background-networking', '--disable-component-update',
-    '--disable-default-apps', '--disable-extensions', '--disable-sync', '--metrics-recording-only',
-    '--no-first-run', '--no-default-browser-check', '--password-store=basic', '--use-mock-keychain',
-    '--disable-features=MediaRouter,OptimizationHints,Translate', '--disable-blink-features=AutomationControlled', `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`, `--proxy-server=http://127.0.0.1:${proxy.port}`, '--proxy-bypass-list=<-loopback>',
-    `--window-size=${options.viewportWidth || 1440},${options.viewportHeight || 1000}`, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-  handle.on('error', (error) => { diagnostics.spawnError = error; });
-  handle.stderr?.on('data', (chunk) => { diagnostics.stderr = (diagnostics.stderr + String(chunk)).slice(-8000); });
+  const startedAt = Date.now();
+  let handle = null;
   try {
+    if (!keepProfile && typeof options.prepareProfile === 'function') await options.prepareProfile(profile);
+    handle = childProcess.spawn(executable, [
+      ...platformBrowserArgs(), '--headless=new', '--disable-gpu', '--disable-background-networking', '--disable-component-update',
+      '--disable-default-apps', '--disable-extensions', '--disable-sync', '--metrics-recording-only',
+      '--no-first-run', '--no-default-browser-check', '--password-store=basic', '--use-mock-keychain',
+      '--disable-features=MediaRouter,OptimizationHints,Translate', '--disable-blink-features=AutomationControlled', `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profile}`, `--proxy-server=http://127.0.0.1:${proxy.port}`, '--proxy-bypass-list=<-loopback>',
+      `--window-size=${options.viewportWidth || 1440},${options.viewportHeight || 1000}`, 'about:blank'
+    ], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+    handle.on('error', (error) => { diagnostics.spawnError = error; });
+    handle.stderr?.on('data', (chunk) => { diagnostics.stderr = (diagnostics.stderr + String(chunk)).slice(-8000); });
     await waitForDebugger(port, handle, diagnostics);
+    return { handle, port, profile, keepProfile };
   } catch (error) {
-    logEvent('error', 'capture', 'browser.start.failed', { code: error.code || 'BROWSER_START_FAILED', message: error.message, stderr: diagnostics.stderr });
-    await terminateBrowser(handle);
-    await proxy.close().catch(() => {});
+    const exitedEarly = Boolean(handle) && (handle.exitCode !== null || handle.signalCode !== null);
+    const pendingUpdate = exitedEarly ? await pendingBrowserUpdate(executable) : false;
+    logEvent('error', 'capture', 'browser.start.failed', {
+      code: error.code || 'BROWSER_START_FAILED', message: error.message, stderr: diagnostics.stderr,
+      browser: path.basename(executable), exitCode: handle?.exitCode ?? null, signal: handle?.signalCode ?? null,
+      elapsedMs: Date.now() - startedAt, pendingUpdate
+    });
+    if (handle) await terminateBrowser(handle);
     if (!keepProfile) await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {});
-    throw error;
+    throw Object.assign(error, { code: error.code || 'BROWSER_START_FAILED', browser: path.basename(executable), exitedEarly, pendingUpdate });
   }
+}
+
+function browserStartError(failures) {
+  const updating = failures.find((item) => item.pendingUpdate);
+  const names = [...new Set(failures.map((item) => item.browser).filter(Boolean))].join('・');
+  const hint = updating
+    ? 'Chromeの更新が途中で止まっている可能性があります。Chromeを開いて「設定」→「Chromeについて」で更新を完了し、Chromeを再起動してから保存し直してください。'
+    : 'ChromeまたはEdgeを一度開いて正常に動くか確認し、パソコンを再起動してから保存し直してください。';
+  const error = new Error(`ブラウザ（${names || 'Chrome・Edge'}）を起動できませんでした。${hint}`);
+  error.code = 'BROWSER_START_FAILED';
+  error.cause = failures[failures.length - 1];
+  return error;
+}
+
+export async function createBrowserCaptureSession(options = {}) {
+  const preferred = options.executable || await findBrowser();
+  if (!preferred) throw new Error('ChromeまたはEdgeが見つかりません。');
+  const proxy = await createPolicyProxy({ policyOptions: options.policyOptions });
+  const order = options.userDataDir ? [preferred] : browserStartOrder(preferred, await findBrowsers());
+  const failures = [];
+  let launched = null;
+  let executable = preferred;
+  for (const [index, candidate] of order.entries()) {
+    if (index > 0 && candidate === order[index - 1] && !failures[failures.length - 1]?.exitedEarly) continue;
+    if (index > 0) await delay(candidate === order[index - 1] ? 2000 : 200);
+    try {
+      launched = await launchBrowserProcess(candidate, options, proxy);
+      executable = candidate;
+      if (failures.length) logEvent('warn', 'capture', 'browser.start.recovered', { browser: path.basename(candidate), attempts: failures.length + 1 });
+      break;
+    } catch (error) {
+      failures.push(error);
+      noteBrowserStartFailure(candidate);
+    }
+  }
+  if (!launched) {
+    await proxy.close().catch(() => {});
+    throw browserStartError(failures);
+  }
+  browserStartFailures.delete(executable);
+  const { handle, port, profile, keepProfile } = launched;
   const identity = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(5000) }).then((response) => response.json()).catch(() => null);
   const browserIdentity = regularBrowserIdentity(identity, executable);
   let closed = false;

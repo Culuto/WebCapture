@@ -24,8 +24,20 @@ import { SharedPages } from './shared-pages.mjs';
 import { storageSummary } from './storage-summary.mjs';
 import { archiveDiff, pageDiff } from './archive-diff.mjs';
 import { exportFileName, exportWebCapture, exportWacz, importWebCapture } from './archive-export.mjs';
+import { NotificationCenter } from './notifications.mjs';
+import { ScheduleService } from './schedules.mjs';
+import { WatchService, browserWatchReader, httpWatchReader } from './watches.mjs';
+import { BlobDedupeService, sharedBlobStats } from './blob-dedupe.mjs';
+import { StorageCleanupService } from './storage-cleanup.mjs';
+import { BatchQueue } from './batch-queue.mjs';
+import { PresetStore } from './presets.mjs';
+import { pageHistory } from './page-history.mjs';
+import { retryOptionOverrides } from './issue-report.mjs';
+import { exportReplayPage } from './page-export.mjs';
+import { visualComparison } from './visual-compare.mjs';
 
 let store, crawler, browserInfoPromise, dataWriter, systemMonitor, replayAuditor, deferredMedia, searchIndex, loginProfiles, sharedPages;
+let notifications, schedules, watches, blobDedupe, storageCleanup, batches, presets;
 let appSettings = { lowImpactMode: true, optimizeMode: false, notifyOnComplete: true, optimized: null };
 
 function settingsFile() {
@@ -64,7 +76,9 @@ function archivePage(url) {
   return store.queryArchives({
     query: url.searchParams.get('q') || '',
     offset: url.searchParams.get('offset') || 0,
-    limit: url.searchParams.get('limit') || 60
+    limit: url.searchParams.get('limit') || 60,
+    folder: url.searchParams.get('folder') || '',
+    tag: url.searchParams.get('tag') || ''
   });
 }
 
@@ -152,6 +166,8 @@ async function api(req, res, url) {
   if (!(req.method === 'GET' && (['/api/bootstrap', '/api/snapshot'].includes(url.pathname) || /^\/api\/jobs\/[^/]+\/live(?:\/|$)/.test(url.pathname)))) {
     logEvent('info', 'api', 'request', { method: req.method, path: url.pathname });
   }
+  const extra = await featureApi(req, res, url);
+  if (extra !== false) return extra;
   if (req.method === 'GET' && url.pathname === '/api/health') {
     return json(res, 200, {
       ok: true, app: CONFIG.appName, version: CONFIG.version, ready: true, replayReady: true, storage: 'segmented-v2',
@@ -258,7 +274,7 @@ async function api(req, res, url) {
     return json(res, 200, { ok: true, jobs: url.searchParams.get('view') === 'summary' ? store.listJobSummaries({ limit, includePreviews: false }) : store.listJobs() });
   }
   if (req.method === 'GET' && url.pathname === '/api/archives') {
-    if (!['q', 'offset', 'limit'].some((key) => url.searchParams.has(key))) return json(res, 200, { ok: true, archives: store.listArchives() });
+    if (!['q', 'offset', 'limit', 'folder', 'tag'].some((key) => url.searchParams.has(key))) return json(res, 200, { ok: true, archives: store.listArchives() });
     const archives = archivePage(url);
     return json(res, 200, { ok: true, archives: archives.items, page: { total: archives.total, offset: archives.offset, limit: archives.limit, hasMore: archives.hasMore }, revisions: store.revisions() });
   }
@@ -365,7 +381,7 @@ async function api(req, res, url) {
     if (readOnly ? req.method !== 'GET' : req.method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
     if (!readOnly && !requireMutationGuard(req, res)) return;
     try {
-      if (action === 'storage') return json(res, 200, { ok: true, storage: await storageSummary(store, id) });
+      if (action === 'storage') return json(res, 200, { ok: true, storage: { ...await storageSummary(store, id), shared: await sharedBlobStats(store.archiveRoot(id)) } });
       if (action === 'retry-plan') return json(res, 200, { ok: true, plan: await crawler.retryPlan(id) });
       if (action === 'continue') return json(res, 202, { ok: true, job: await crawler.continueArchive(id) });
       if (action === 'resave') return json(res, 202, { ok: true, job: await crawler.resaveArchive(id) });
@@ -381,7 +397,8 @@ async function api(req, res, url) {
       const list = (value) => Array.isArray(value) ? value.map(String).filter((item) => item.length <= 253).slice(0, 500) : [];
       const loginProfileId = typeof body.loginProfileId === 'string' && body.loginProfileId ? body.loginProfileId : null;
       if (loginProfileId && !await loginProfiles.get(loginProfileId)) return errorJson(res, 400, '選んだログイン設定が見つかりません。');
-      const job = await crawler.retryArchive(id, { loginProfileId, loginHosts: list(body.loginHosts), skipHosts: list(body.skipHosts), includeFailed: body.includeFailed !== false });
+      const retryAction = typeof body.action === 'string' ? body.action : '';
+      const job = await crawler.retryArchive(id, { loginProfileId, loginHosts: list(body.loginHosts), skipHosts: list(body.skipHosts), includeFailed: body.includeFailed !== false, optionOverrides: sanitizeOverrides(retryOptionOverrides(retryAction)), reason: retryAction });
       return json(res, 202, { ok: true, job });
     } catch (error) {
       return errorJson(res, error.status || 500, error.message, error.code || 'ARCHIVE_ACTION_FAILED');
@@ -419,6 +436,7 @@ async function api(req, res, url) {
     const id = decodeURIComponent(archiveMatch[1]);
     if (!/^archive_[a-z0-9_]+$/i.test(id)) return errorJson(res, 400, 'アーカイブIDが正しくありません。');
     logEvent('info', 'archive', 'delete.requested', { archiveId: id });
+    if (store.maintenanceLocks.has(id)) return errorJson(res, 409, '容量の整理中のため、終わってから削除してください。', 'ARCHIVE_BUSY');
     const referencedBy = sharedPages.referencesTo(id);
     if (referencedBy.length) {
       const names = referencedBy.map((other) => store.getArchive(other)?.title || store.getArchive(other)?.startUrl || other).slice(0, 5).join('、');
@@ -435,16 +453,14 @@ async function api(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/jobs') {
     if (!requireMutationGuard(req, res)) return;
     const body = await readJson(req);
-    const checked = await assertPublicUrl(body.url);
-    const requested = { ...(body.options || {}), optimize: appSettings.optimizeMode };
-    if (appSettings.optimizeMode) Object.assign(requested, { concurrency: OPTIMIZE_START.capture, discoveryConcurrency: OPTIMIZE_START.discovery });
-    const options = sanitizeOptions(requested);
-    if (options.loginProfileId && !await loginProfiles.get(options.loginProfileId)) return errorJson(res, 400, '選んだログイン設定が見つかりません。');
-    const job = await store.addJob({ startUrl: checked.url, options });
-    logEvent('info', 'crawler', 'job.created', { jobId: job.id, archiveId: job.archiveId, startUrl: safeUrl(job.startUrl), options: job.options });
-    crawler.start(job.id);
-    return json(res, 202, { ok: true, job });
+    try {
+      return json(res, 202, { ok: true, job: await startCaptureJob(body.url, body.options) });
+    } catch (error) {
+      if (error.code === 'LOGIN_NOT_FOUND') return errorJson(res, 400, error.message);
+      throw error;
+    }
   }
+
   const liveMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/live(?:\/(\d{1,2})\/frame)?$/);
   if (liveMatch) {
     if (req.method !== 'GET') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
@@ -455,6 +471,7 @@ async function api(req, res, url) {
       crawler.liveView.touchViewer(id);
       return json(res, 200, {
         ok: true, jobId: id, status: job.status, phase: job.phase || '', pollMs: crawler.liveView.pollMs(), streamPaused: crawler.liveView.streamPaused(),
+        remaining: Number(job.terminalQueue ? job.queueCount || 0 : job.queue?.length || 0) + Number(job.inFlight?.length || 0),
         slots: crawler.liveView.snapshot(id, ['running', 'queued'].includes(job.status) ? Math.max(1, crawler.tuningSnapshot(id)?.capture ?? (Number(job.options?.concurrency) || 1)) : 0)
       });
     }
@@ -486,6 +503,181 @@ async function api(req, res, url) {
     }
     logEvent('info', 'crawler', `job.${jobAction[2]}`, { jobId: id, status: job?.status });
     return json(res, 200, { ok: true, job });
+  }
+  return false;
+}
+
+async function startCaptureJob(rawUrl, rawOptions = {}) {
+  const checked = await assertPublicUrl(rawUrl);
+  const requested = { ...(rawOptions || {}), optimize: appSettings.optimizeMode };
+  if (appSettings.optimizeMode) Object.assign(requested, { concurrency: OPTIMIZE_START.capture, discoveryConcurrency: OPTIMIZE_START.discovery });
+  const options = sanitizeOptions(requested);
+  if (options.loginProfileId && !await loginProfiles.get(options.loginProfileId)) throw Object.assign(new Error('選んだログイン設定が見つかりません。'), { code: 'LOGIN_NOT_FOUND' });
+  const job = await store.addJob({ startUrl: checked.url, options });
+  logEvent('info', 'crawler', 'job.created', { jobId: job.id, archiveId: job.archiveId, startUrl: safeUrl(job.startUrl), options: job.options });
+  crawler.start(job.id);
+  return job;
+}
+
+function sanitizeOverrides(overrides = {}) {
+  if (!Object.keys(overrides).length) return {};
+  const sanitized = sanitizeOptions(overrides);
+  return Object.fromEntries(Object.keys(overrides).map((key) => [key, sanitized[key]]));
+}
+
+const ARCHIVE_ID = /^archive_[a-z0-9_]+$/i;
+const IMAGE_PATH = /^(?:screenshots\/\d{5}(?:-mobile)?\.png|replay-audit\/[A-Za-z0-9-]+\/(?:screenshots|visual)\/[A-Za-z0-9-]+\.png)$/;
+
+async function sendServiceError(res, error) {
+  if (error.status) return errorJson(res, error.status, error.message, error.code || 'REQUEST_FAILED');
+  throw error;
+}
+
+async function featureApi(req, res, url) {
+  const route = url.pathname;
+  const method = req.method;
+  const mutate = async () => {
+    if (!requireMutationGuard(req, res)) return false;
+    const body = await readJson(req);
+    return body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  };
+  try {
+    if (route === '/api/notifications') {
+      if (method !== 'GET') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+      return json(res, 200, { ok: true, ...notifications.list({ limit: url.searchParams.get('limit') }) });
+    }
+    if (route === '/api/notifications/read' && method === 'POST') {
+      const body = await mutate(); if (body === false) return;
+      await notifications.markRead(Array.isArray(body.ids) ? body.ids.slice(0, 500) : null);
+      return json(res, 200, { ok: true, ...notifications.list({}) });
+    }
+    if (route === '/api/notifications/clear' && method === 'POST') {
+      const body = await mutate(); if (body === false) return;
+      await notifications.clear();
+      return json(res, 200, { ok: true, ...notifications.list({}) });
+    }
+    if (route === '/api/schedules' && method === 'GET') return json(res, 200, { ok: true, schedules: schedules.list() });
+    const scheduleDelete = route.match(/^\/api\/schedules\/(schedule_[a-z0-9_]+)$/i);
+    if (scheduleDelete && method === 'DELETE') {
+      if (!requireMutationGuard(req, res)) return;
+      await schedules.remove(scheduleDelete[1]);
+      return json(res, 200, { ok: true });
+    }
+    const archiveFeature = route.match(/^\/api\/archives\/([^/]+)\/(schedule|meta|page-export|visual|image)$/);
+    if (archiveFeature) {
+      const id = decodeURIComponent(archiveFeature[1]);
+      if (!ARCHIVE_ID.test(id)) return errorJson(res, 400, 'アーカイブIDが正しくありません。');
+      if (!store.getArchive(id)) return errorJson(res, 404, '保存済みサイトが見つかりません。', 'NOT_FOUND');
+      const action = archiveFeature[2];
+      if (action === 'schedule') {
+        if (method === 'GET') return json(res, 200, { ok: true, schedule: schedules.forArchive(id) });
+        if (method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+        const body = await mutate(); if (body === false) return;
+        return json(res, 200, { ok: true, schedule: await schedules.upsert(id, body) });
+      }
+      if (action === 'meta') {
+        if (method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+        const body = await mutate(); if (body === false) return;
+        const archive = await store.updateArchiveMeta(id, { tags: body.tags, folder: body.folder, note: body.note });
+        logEvent('info', 'archive', 'meta.updated', { archiveId: id, tags: archive.tags?.length || 0, folder: Boolean(archive.folder), note: Boolean(archive.note) });
+        return json(res, 200, { ok: true, archive, facets: store.archiveFacets() });
+      }
+      if (method !== 'GET') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+      if (action === 'image') {
+        const file = String(url.searchParams.get('path') || '');
+        if (!IMAGE_PATH.test(file)) return errorJson(res, 400, '画像の指定が正しくありません。');
+        let body;
+        try { body = await fs.readFile(path.join(store.archiveRoot(id), file)); } catch { return errorJson(res, 404, '画像が見つかりません。', 'NOT_FOUND'); }
+        res.writeHead(200, { 'content-type': 'image/png', 'content-length': body.length, 'cache-control': 'private, max-age=3600' });
+        res.end(body);
+        return;
+      }
+      if (action === 'visual') {
+        const pageUrl = url.searchParams.get('url') || '';
+        return json(res, 200, { ok: true, visual: await visualComparison(store, id, pageUrl) });
+      }
+      const pageUrl = url.searchParams.get('url') || '';
+      if (!/^https?:\/\//i.test(pageUrl)) return errorJson(res, 400, 'ページのURLを指定してください。');
+      if (!allowedOrigin(req) || !['same-origin', 'none', undefined].includes(req.headers['sec-fetch-site'])) return errorJson(res, 403, 'この画面以外からの操作は拒否しました。', 'ORIGIN_REJECTED');
+      const format = url.searchParams.get('format') === 'pdf' ? 'pdf' : 'png';
+      const view = url.searchParams.get('view') === 'mobile' ? 'mobile' : 'desktop';
+      const result = await exportReplayPage({ archiveId: id, pageUrl, format, view, config: CONFIG, store });
+      const name = `${(store.getArchive(id).title || 'page').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80)}.${format}`;
+      res.writeHead(200, {
+        'content-type': format === 'pdf' ? 'application/pdf' : 'image/png', 'content-length': result.length, 'cache-control': 'no-store',
+        'content-disposition': `attachment; filename="${name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(name)}`
+      });
+      res.end(result);
+      logEvent('info', 'archive', 'page.exported', { archiveId: id, format, view, bytes: result.length });
+      return;
+    }
+    if (route === '/api/archives/facets' && method === 'GET') return json(res, 200, { ok: true, facets: store.archiveFacets() });
+    if (route === '/api/pages/history' && method === 'GET') {
+      const pageUrl = url.searchParams.get('url') || '';
+      if (!/^https?:\/\//i.test(pageUrl)) return errorJson(res, 400, 'ページのURLを指定してください。');
+      return json(res, 200, { ok: true, ...await pageHistory(store, searchIndex, pageUrl) });
+    }
+    if (route === '/api/watches') {
+      if (method === 'GET') return json(res, 200, { ok: true, watches: watches.list() });
+      if (method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+      const body = await mutate(); if (body === false) return;
+      const watch = await watches.add(body);
+      watches.check(watch.id).catch(() => {});
+      return json(res, 201, { ok: true, watch });
+    }
+    const watchMatch = route.match(/^\/api\/watches\/(watch_[a-z0-9_]+)(?:\/(check))?$/i);
+    if (watchMatch) {
+      if (method === 'DELETE' && !watchMatch[2]) {
+        if (!requireMutationGuard(req, res)) return;
+        await watches.remove(watchMatch[1]);
+        return json(res, 200, { ok: true });
+      }
+      if (method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+      const body = await mutate(); if (body === false) return;
+      if (watchMatch[2] === 'check') return json(res, 200, { ok: true, watch: await watches.check(watchMatch[1]) });
+      return json(res, 200, { ok: true, watch: await watches.update(watchMatch[1], body) });
+    }
+    if (route === '/api/storage/dedupe') {
+      if (method === 'GET') return json(res, 200, { ok: true, task: blobDedupe.status() });
+      if (method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+      const body = await mutate(); if (body === false) return;
+      return json(res, 202, { ok: true, task: blobDedupe.start() });
+    }
+    if (route === '/api/storage/cleanup' && method === 'GET') return json(res, 200, { ok: true, cleanup: await storageCleanup.status() });
+    const cleanupMatch = route.match(/^\/api\/storage\/cleanup\/(settings|plan|execute)$/);
+    if (cleanupMatch && method === 'POST') {
+      const body = await mutate(); if (body === false) return;
+      if (cleanupMatch[1] === 'settings') return json(res, 200, { ok: true, settings: await storageCleanup.updateSettings(body) });
+      if (cleanupMatch[1] === 'plan') return json(res, 200, { ok: true, plan: await storageCleanup.buildPlan() });
+      const result = await storageCleanup.execute(String(body.planId || ''), Array.isArray(body.archiveIds) ? body.archiveIds.map(String).slice(0, 5000) : null);
+      return json(res, 200, { ok: true, result });
+    }
+    if (route === '/api/batches') {
+      if (method === 'GET') return json(res, 200, { ok: true, batches: batches.list() });
+      if (method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+      const body = await mutate(); if (body === false) return;
+      const created = await batches.create({ text: typeof body.text === 'string' ? body.text.slice(0, 200000) : '', urls: Array.isArray(body.urls) ? body.urls.map(String).slice(0, 1000) : null, options: body.options || {} });
+      return json(res, 201, { ok: true, ...created });
+    }
+    const batchCancel = route.match(/^\/api\/batches\/(batch_[a-z0-9_]+)\/cancel$/i);
+    if (batchCancel && method === 'POST') {
+      const body = await mutate(); if (body === false) return;
+      return json(res, 200, { ok: true, batch: await batches.cancel(batchCancel[1]) });
+    }
+    if (route === '/api/presets') {
+      if (method === 'GET') return json(res, 200, { ok: true, presets: presets.list() });
+      if (method !== 'POST') return errorJson(res, 405, 'この操作は許可されていません。', 'METHOD_NOT_ALLOWED');
+      const body = await mutate(); if (body === false) return;
+      return json(res, 201, { ok: true, preset: await presets.save(body), presets: presets.list() });
+    }
+    const presetMatch = route.match(/^\/api\/presets\/([a-z0-9_]+)$/i);
+    if (presetMatch && method === 'DELETE') {
+      if (!requireMutationGuard(req, res)) return;
+      await presets.remove(presetMatch[1]);
+      return json(res, 200, { ok: true, presets: presets.list() });
+    }
+  } catch (error) {
+    return sendServiceError(res, error);
   }
   return false;
 }
@@ -569,11 +761,13 @@ try {
   crawler = new CrawlManager(store, {
     ...CONFIG, systemMonitor, searchIndex, loginProfiles, sharedPages, lowImpactMode: appSettings.lowImpactMode,
     onJobFinished: async (result) => {
+      if (schedules && await schedules.handleJobFinished(result).catch(() => null)) return;
       if (appSettings.notifyOnComplete === false) return;
       let host = result.startUrl;
       try { host = new URL(result.startUrl).hostname; } catch {}
       const label = ({ complete: '保存が完了', 'complete-with-errors': '保存が完了（一部エラー）', 'limit-reached': '上限に達して停止', failed: '保存に失敗', blocked: 'アクセス確認で停止', 'login-required': 'ログインが必要' })[result.status] || '保存が終了';
-      await notifyDesktop(`WebCapture: ${label}`, `${host} を ${result.pages}ページ保存しました。保存できなかったもの ${result.problemCount}件。`);
+      const detail = result.status === 'failed' && !result.pages && result.message ? result.message : `${host} を ${result.pages}ページ保存しました。保存できなかったもの ${result.problemCount}件。`;
+      await notifyDesktop(`WebCapture: ${label}`, detail);
     },
     onTuningResult: async (result) => {
       appSettings = { ...appSettings, optimized: result };
@@ -582,6 +776,20 @@ try {
     }
   });
   await crawler.publishInterruptedArchives();
+  notifications = await new NotificationCenter({ dataRoot: CONFIG.dataRoot, desktop: notifyDesktop, desktopEnabled: () => appSettings.notifyOnComplete !== false }).init();
+  schedules = await new ScheduleService({ dataRoot: CONFIG.dataRoot, store, crawler, notifications, diff: (current, previous) => archiveDiff(store, current, previous) }).init();
+  watches = await new WatchService({
+    dataRoot: CONFIG.dataRoot, notifications, assertUrl: (value) => assertPublicUrl(value),
+    reader: async (target) => (await findBrowser()) ? browserWatchReader(target) : httpWatchReader(safeFetch)(target)
+  }).init();
+  blobDedupe = new BlobDedupeService({ store, isBusy: (id) => crawler.archiveBusy(id) });
+  storageCleanup = await new StorageCleanupService({ dataRoot: CONFIG.dataRoot, store, notifications, isBusy: (id) => crawler.archiveBusy(id) || deferredMedia?.tasks?.get(id)?.status === 'running', isShared: (id) => sharedPages.referencesTo(id).length > 0 }).init();
+  batches = await new BatchQueue({ dataRoot: CONFIG.dataRoot, store, notifications, startJob: (value, options) => startCaptureJob(value, options) }).init();
+  presets = await new PresetStore({ dataRoot: CONFIG.dataRoot }).init();
+  schedules.start();
+  watches.start();
+  storageCleanup.start();
+  batches.start();
   replayAuditor = new ReplayAuditManager(store, CONFIG);
   cleanupStaleBrowserProfiles().catch(() => {});
   deferredMedia = new DeferredMediaService({ store, fetcher: safeFetch });
@@ -604,6 +812,7 @@ function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   initialized = false;
   shutdownPromise = (async () => {
+    for (const service of [schedules, watches, storageCleanup, batches]) service?.stop();
     await replayAuditor.shutdown();
     const closingServers = Promise.all([new Promise((resolve) => appServer.close(resolve)), new Promise((resolve) => replayServer.close(resolve))]);
     await crawler.shutdown();
@@ -626,6 +835,6 @@ export function summaryManifest(manifest, quality = manifest.quality) {
   const { pages = [], resources, resourceAliases, postResponses, resourceVariants, blocked, ...rest } = manifest;
   return {
     ...rest, quality,
-    pages: pages.map((page) => ({ url: page.url, requestedUrl: page.requestedUrl, title: page.title, depth: page.depth, scope: page.scope, externalDepth: page.externalDepth, html: page.html, file: page.file, capturedAt: page.capturedAt, quality: page.quality ? { classification: page.quality.classification, level: page.quality.level, score: page.quality.score } : undefined }))
+    pages: pages.map((page) => ({ url: page.url, requestedUrl: page.requestedUrl, title: page.title, depth: page.depth, scope: page.scope, externalDepth: page.externalDepth, html: page.html, file: page.file, capturedAt: page.capturedAt, screenshot: page.screenshot || null, mobile: page.mobile?.html ? { screenshot: page.mobile.screenshot || null } : undefined, quality: page.quality ? { classification: page.quality.classification, level: page.quality.level, score: page.quality.score } : undefined }))
   };
 }

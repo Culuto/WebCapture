@@ -117,6 +117,7 @@ const PAGE_AUDIT_EXPRESSION = String.raw`(async () => {
 })()`;
 
 const SAFE_INTERACTION_AUDIT_EXPRESSION = safeInteractionExpression();
+export const VISUAL_MATCH_THRESHOLD = 0.9;
 
 function abortError() {
   const error = new Error('表示検査を停止しました。');
@@ -232,7 +233,7 @@ export function classifyReplayAuditPage(page = {}) {
   return major ? 'error' : warning ? 'warning' : 'healthy';
 }
 
-async function createLocalAuditBrowser({ executable, viewportWidth = 1440, viewportHeight = 1000 } = {}) {
+export async function createLocalAuditBrowser({ executable, viewportWidth = 1440, viewportHeight = 1000 } = {}) {
   const browserExecutable = executable || await findBrowser();
   if (!browserExecutable) throw new Error('ChromeまたはEdgeが見つかりません。');
   const port = await freePort();
@@ -275,7 +276,17 @@ async function createLocalAuditBrowser({ executable, viewportWidth = 1440, viewp
   }
 }
 
-export async function auditReplayPage(client, { archiveId, page, replayOrigin, signal, settleMs = 250 } = {}) {
+export async function captureFullPage(client, { maxHeight = 16000, timeoutMs = 60000 } = {}) {
+  const metrics = await client.send('Page.getLayoutMetrics', {}, 15000);
+  const content = metrics.cssContentSize || metrics.contentSize || {};
+  const viewport = metrics.cssLayoutViewport || metrics.layoutViewport || {};
+  const width = Math.max(1, Math.ceil(viewport.clientWidth || content.width || 1440));
+  const height = Math.max(1, Math.min(maxHeight, Math.ceil(content.height || viewport.clientHeight || 1000)));
+  const shot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, fromSurface: true, clip: { x: 0, y: 0, width, height, scale: 1 } }, timeoutMs);
+  return shot.data ? Buffer.from(shot.data, 'base64') : null;
+}
+
+export async function auditReplayPage(client, { archiveId, page, replayOrigin, signal, settleMs = 250, captureVisual = false } = {}) {
   if (signal?.aborted) throw abortError();
   const navigationId = `audit-${crypto.randomBytes(6).toString('hex')}`;
   const targetUrl = `${replayOrigin}/archive/${encodeURIComponent(archiveId)}/page?url=${encodeURIComponent(page.url)}&navigationId=${navigationId}`;
@@ -372,6 +383,10 @@ export async function auditReplayPage(client, { archiveId, page, replayOrigin, s
       if (error.name === 'AbortError') throw error;
       navigationError ||= diagnosticText(error.message);
     }
+    let visualShot = null;
+    if (captureVisual && !navigationError) {
+      try { visualShot = await captureFullPage(client); } catch (error) { if (error.name === 'AbortError') throw error; }
+    }
     try {
       const evaluated = await client.send('Runtime.evaluate', { expression: SAFE_INTERACTION_AUDIT_EXPRESSION, awaitPromise: true, returnByValue: true }, 30000);
       if (evaluated.exceptionDetails) interactions = { discoveredCount: 0, candidateCount: 0, testedCount: 0, skippedCount: 0, transientCount: 0, changedCount: 0, errorCount: 1, limitReached: false, items: [{ kind: 'audit', label: '', changed: false, error: diagnosticText(evaluated.exceptionDetails.text), status: 'error', reason: '' }] };
@@ -398,6 +413,7 @@ export async function auditReplayPage(client, { archiveId, page, replayOrigin, s
       runtimeAdvisories: uniqueBy(collected.runtimeAdvisories, item => `${item.kind}|${item.message}|${item.source}`).slice(0, 100),
       runtimeErrors: uniqueBy(collected.runtimeErrors, item => `${item.kind}|${item.message}|${item.source}`).slice(0, 100)
     };
+    if (visualShot) result.visualShot = visualShot;
     result.status = classifyReplayAuditPage(result);
     if (result.status === 'error') {
       try {
@@ -410,6 +426,26 @@ export async function auditReplayPage(client, { archiveId, page, replayOrigin, s
     for (const remove of removers) remove();
     await client.send('Fetch.disable').catch(() => {});
   }
+}
+
+export function defaultVisualComparer(config) {
+  const appOrigin = `http://${config.host}:${config.port}`;
+  let ready = false;
+  return async (client, archiveId, savedPath, replayPath) => {
+    if (!ready) {
+      const loaded = waitForEvent(client, 'Page.loadEventFired', 15000);
+      await client.send('Page.navigate', { url: `${appOrigin}/visual-diff.html` }, 15000);
+      await loaded.catch(() => {});
+      ready = true;
+    }
+    const image = (file) => `/api/archives/${encodeURIComponent(archiveId)}/image?path=${encodeURIComponent(file)}`;
+    const evaluated = await client.send('Runtime.evaluate', {
+      expression: `import('/visual-diff.js').then((module) => module.compareImageUrls(${JSON.stringify(image(savedPath))}, ${JSON.stringify(image(replayPath))}))`,
+      awaitPromise: true, returnByValue: true
+    }, 60000);
+    if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.exception?.description || evaluated.exceptionDetails.text || '見た目を比べられませんでした。');
+    return evaluated.result?.value || {};
+  };
 }
 
 function publicState(state) {
@@ -441,7 +477,13 @@ function reportSummary(pages) {
     interactionErrors: pages.reduce((sum, page) => sum + Number(page.interactions?.errorCount || 0), 0),
     interactionSkipped: pages.reduce((sum, page) => sum + Number(page.interactions?.skippedCount || 0), 0),
     interactionTransient: pages.reduce((sum, page) => sum + Number(page.interactions?.transientCount || 0), 0),
-    interactionLimitPages: pages.filter(page => page.interactions?.limitReached).length
+    interactionLimitPages: pages.filter(page => page.interactions?.limitReached).length,
+    visualCompared: pages.filter(page => Number.isFinite(page.visual?.similarity)).length,
+    visualMismatchPages: pages.filter(page => Number.isFinite(page.visual?.similarity) && page.visual.similarity < VISUAL_MATCH_THRESHOLD).length,
+    visualAverage: (() => {
+      const values = pages.map(page => page.visual?.similarity).filter(Number.isFinite);
+      return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 1000) / 1000 : null;
+    })()
   };
 }
 
@@ -452,6 +494,7 @@ export class ReplayAuditManager {
     this.executable = options.executable;
     this.browserFactory = options.browserFactory || createLocalAuditBrowser;
     this.auditPage = options.auditPage || auditReplayPage;
+    this.compareVisual = options.compareVisual || null;
     this.states = new Map();
     this.queue = Promise.resolve();
     this.closed = false;
@@ -514,8 +557,20 @@ export class ReplayAuditManager {
           archiveId: state.archiveId,
           page,
           replayOrigin: `http://${this.config.host}:${this.config.replayPort}`,
-          signal: state.controller.signal
+          signal: state.controller.signal,
+          captureVisual: Boolean(page.screenshot)
         });
+        if (result.visualShot) {
+          const directory = path.join(this.store.archiveRoot(state.archiveId), 'replay-audit', state.runId, 'visual');
+          await fs.mkdir(directory, { recursive: true });
+          const name = `${String(index + 1).padStart(5, '0')}-${crypto.createHash('sha256').update(page.url).digest('hex').slice(0, 12)}.png`;
+          const file = path.join(directory, name);
+          const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+          await fs.writeFile(temporary, result.visualShot);
+          await fs.rename(temporary, file);
+          result.visual = { saved: page.screenshot, replay: path.relative(this.store.archiveRoot(state.archiveId), file).replaceAll('\\', '/') };
+        }
+        delete result.visualShot;
         if (!result.interactions || result.interactions.limitReached || Number(result.interactions.skippedCount || 0) > 0) state.coverage.interactions = false;
         for (const interaction of result.interactions?.items || []) {
           logEvent(interaction.error ? 'warn' : 'info', 'replay-audit', 'interaction.completed', {
@@ -546,6 +601,7 @@ export class ReplayAuditManager {
           runtimeErrors: result.runtimeErrors.length
         });
       }
+      await this.compareVisuals(state, session).catch((error) => logEvent('warn', 'replay-audit', 'visual.failed', { archiveId: state.archiveId, message: diagnosticText(error.message) }));
       state.status = 'completed';
       state.completedAt = new Date().toISOString();
       state.currentPageTitle = '';
@@ -566,6 +622,23 @@ export class ReplayAuditManager {
       state.controller = null;
       state.task = null;
     }
+  }
+
+  async compareVisuals(state, session) {
+    const targets = state.pages.filter((page) => page.visual?.saved && page.visual?.replay);
+    if (!targets.length) return;
+    const compare = this.compareVisual || defaultVisualComparer(this.config);
+    state.currentPageTitle = '見た目の比較';
+    for (const page of targets) {
+      if (state.controller.signal.aborted) throw abortError();
+      try {
+        const result = await compare(session.client, state.archiveId, page.visual.saved, page.visual.replay);
+        page.visual = { ...page.visual, ...result, changed: (result.changed || []).slice(0, 4000) };
+      } catch (error) {
+        page.visual = { ...page.visual, error: diagnosticText(error.message) };
+      }
+    }
+    logEvent('info', 'replay-audit', 'visual.completed', { archiveId: state.archiveId, pages: targets.length });
   }
 
   cancel(archiveId) {

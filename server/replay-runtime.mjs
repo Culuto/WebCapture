@@ -144,3 +144,81 @@ export function installCollapseGuard(staticUrl, report, timing = {}) {
     else begin();
   } catch {}
 }
+
+export function installFindInPage(report) {
+  const state = { ranges: [], index: -1, query: '' };
+  const supported = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
+  const ensureStyle = () => {
+    if (document.getElementById('webcapture-find-style')) return;
+    const style = document.createElement('style');
+    style.id = 'webcapture-find-style';
+    style.textContent = '::highlight(webcapture-find){background:#fde047;color:#111}::highlight(webcapture-find-current){background:#f97316;color:#111}';
+    (document.head || document.documentElement).appendChild(style);
+  };
+  const clear = () => {
+    state.ranges = [];
+    state.index = -1;
+    if (supported) { CSS.highlights.delete('webcapture-find'); CSS.highlights.delete('webcapture-find-current'); }
+  };
+  const visible = (node) => {
+    const element = node.parentElement;
+    if (!element || element.closest('script,style,noscript,template')) return false;
+    const style = getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const collect = (root, needle, ranges) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && ranges.length < 2000; node = walker.nextNode()) {
+      const text = node.data.toLowerCase();
+      if (!text.includes(needle) || !visible(node)) continue;
+      let at = text.indexOf(needle);
+      while (at >= 0 && ranges.length < 2000) {
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + needle.length);
+        ranges.push(range);
+        at = text.indexOf(needle, at + needle.length);
+      }
+    }
+    for (const element of root.querySelectorAll ? root.querySelectorAll('*') : []) if (element.shadowRoot) collect(element.shadowRoot, needle, ranges);
+  };
+  const show = () => {
+    if (!supported) return;
+    CSS.highlights.set('webcapture-find', new Highlight(...state.ranges));
+    const current = state.ranges[state.index];
+    if (current) {
+      CSS.highlights.set('webcapture-find-current', new Highlight(current));
+      const element = current.startContainer.parentElement;
+      element?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    } else CSS.highlights.delete('webcapture-find-current');
+  };
+  const search = (query, direction) => {
+    const needle = String(query || '').trim().toLowerCase().slice(0, 200);
+    if (!needle) { clear(); state.query = ''; return; }
+    if (needle !== state.query || !state.ranges.length || state.ranges.some((range) => !range.startContainer.isConnected)) {
+      clear();
+      state.query = needle;
+      ensureStyle();
+      if (document.body) collect(document.body, needle, state.ranges);
+      state.index = state.ranges.length ? 0 : -1;
+    } else if (state.ranges.length) {
+      state.index = (state.index + (direction === 'previous' ? -1 : 1) + state.ranges.length) % state.ranges.length;
+    }
+    if (!supported && typeof window.find === 'function') { window.find(query, false, direction === 'previous', true); return; }
+    show();
+  };
+  addEventListener('message', (event) => {
+    if (parent === window || event.source !== parent || !event.data || event.data.type !== 'webcapture-find') return;
+    try { search(event.data.query, event.data.direction); } catch { clear(); }
+    report('webcapture-find-result', { query: String(event.data.query || '').slice(0, 200), count: state.ranges.length, index: state.index });
+  });
+}
+
+export function installMobileIdentity(userAgent) {
+  const define = (target, name, value) => { try { Object.defineProperty(target, name, { get: () => value, configurable: true }); } catch {} };
+  if (typeof Navigator === 'undefined') return;
+  define(Navigator.prototype, 'userAgent', userAgent);
+  define(Navigator.prototype, 'appVersion', userAgent.replace(/^Mozilla\//, ''));
+  define(Navigator.prototype, 'platform', 'Linux armv8l');
+  define(Navigator.prototype, 'maxTouchPoints', 5);
+}

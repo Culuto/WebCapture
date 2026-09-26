@@ -3,7 +3,7 @@
   "Systemname": "WebCapture",
   "info": "Webサイトを安全に保存・隔離再生",
   "info-detail": "権限のある公開WebサイトをURL階層に沿って巡回し、HTML、CSS、全srcset画像候補、フォント、GIF、動画、音声、JavaScript、API応答、ブラウザ描画後DOM、open Shadow DOM、Canvas静止画、フォーム表示状態、スクリーンショット、WARC通信記録をローカルへ保存するWebアーカイブアプリ。高精度プロファイルは保存しながら構造を把握し、ページ数・容量・同一サイト深度・素材数・リンク数・実行時間のユーザー上限を設けない。HTMLの軽量探索で全体または指定ページ数を先に把握する方式も選べる。Public Suffix Listに基づく登録可能ドメインと、開始・候補ホストのラベルに一致する固有キーワードで関連サイトを判定し、外部リンクは独立深度を指定する。構造把握を最大16並列、本保存を最大4並列にし、隔離ブラウザ再利用とバッチ確定で高速化する。複数ジョブは全体の公平な並列枠を共有し、CPU・メモリ・ディスク・通信・GPUの端末負荷を記録しながら、高負荷時だけ新しい取得開始数を抑える。保存後は全ページを隔離Chromeで自動表示検査し、画像、フォント、スクロール、通信失敗、JavaScriptエラーを原本とは別の副記録へ保持できる。保存済みサイトは別オリジンのsandbox iframeで隔離再生する。ログイン、投稿、購入、決済、DRM、WebSocket、WebRTCなど閉鎖後のサーバー処理は再現対象外。",
-  "Version": "4.0.0",
+  "Version": "4.1.0",
   "type": "Desktop Web / localhost / Node.js 24 / Chrome DevTools Protocol / WARC 1.1",
   "Developer-name": "MultiApp project",
   "terminal": [
@@ -45,5 +45,5 @@
     "ssrf-protection",
     "localhost"
   ],
-  "updatedAt": "2026-09-25T15:10:59.760Z"
+  "updatedAt": "2026-09-25T16:48:11.837Z"
 }

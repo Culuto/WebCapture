@@ -32,7 +32,7 @@ export const CONFIG = Object.freeze({
   replayPort: Number(process.env.WEBCAPTURE_REPLAY_PORT || 43194),
   iframeParentOrigins: Object.freeze(appConfigParentOrigins()),
   appName: 'WebCapture',
-  version: '4.0.0',
+  version: '4.1.0',
   metricsIntervalMs: boundedInteger(process.env.WEBCAPTURE_METRICS_INTERVAL_MS, 5000, 1000, 60000),
   globalCaptureConcurrency: boundedInteger(process.env.WEBCAPTURE_GLOBAL_CAPTURE_CONCURRENCY, 30, 1, 64),
   globalDiscoveryConcurrency: boundedInteger(process.env.WEBCAPTURE_GLOBAL_DISCOVERY_CONCURRENCY, 256, 1, 512),

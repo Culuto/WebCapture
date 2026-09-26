@@ -22,7 +22,7 @@ function warcPayload(records, metadata) {
   const chunks = [record({
     'WARC-Type': 'warcinfo', 'WARC-Date': now, 'WARC-Record-ID': `<urn:uuid:${crypto.randomUUID()}>`,
     'Content-Type': 'application/warc-fields'
-  }, `software: WebCapture/4.0.0\r\nformat: WARC File Format 1.1\r\njson-metadata: ${JSON.stringify(metadata)}\r\n`)];
+  }, `software: WebCapture/4.1.0\r\nformat: WARC File Format 1.1\r\njson-metadata: ${JSON.stringify(metadata)}\r\n`)];
   for (const item of records) {
     const responseId = `<urn:uuid:${crypto.randomUUID()}>`;
     chunks.push(record({
