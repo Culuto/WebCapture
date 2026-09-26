@@ -5,6 +5,24 @@ const SIZE_KEY = 'webcapture.liveView.size';
 const SIZE_MIN_WIDTH = { small: 220, medium: 360, large: 520 };
 const TILE_RATIO = 16 / 9;
 const LIVE_STATUSES = new Set(['running', 'queued']);
+const RETIRE_AFTER_MS = 10000;
+
+export function retiredSlots(slots = [], remaining = null) {
+  const retired = new Set();
+  if (!Number.isFinite(remaining) || remaining >= slots.length) return retired;
+  for (const slot of slots) if (!slot.busy && (slot.idleMs ?? Infinity) >= RETIRE_AFTER_MS) retired.add(slot.index);
+  if (retired.size >= slots.length && slots.length) {
+    const latest = [...slots].sort((a, b) => (a.idleMs ?? Infinity) - (b.idleMs ?? Infinity))[0];
+    retired.delete(latest.index);
+  }
+  return retired;
+}
+
+export function idlePlaceholder(slot, remaining, busyCount) {
+  if (slot.busy) return slot.url ? (['http', 'file'].includes(slot.phase) ? '画面を使わない方式で保存しています' : '画面を準備中') : '待機中';
+  if (Number.isFinite(remaining) && remaining <= busyCount) return '完了済み';
+  return slot.url ? '次のページを待っています' : '待機中';
+}
 
 function readEnabled() {
   try { return localStorage.getItem(STORAGE_KEY) !== 'off'; } catch { return true; }
@@ -69,7 +87,7 @@ export function createLiveView({ root, uiLog, setIcon, isViewActive }) {
   }, { passive: false });
   tabsPrev?.addEventListener('click', () => tabs.scrollBy({ left: -Math.max(160, tabs.clientWidth * 0.7), behavior: 'smooth' }));
   tabsNext?.addEventListener('click', () => tabs.scrollBy({ left: Math.max(160, tabs.clientWidth * 0.7), behavior: 'smooth' }));
-  const state = { jobId: null, enabled: readEnabled(), selected: 'all', slots: [], timer: null, inFlight: false, shownSeq: new Map(), loading: new Set(), expanded: false, pollMs: POLL_MS, size: 'auto' };
+  const state = { jobId: null, enabled: readEnabled(), selected: 'all', slots: [], remaining: null, retired: new Set(), timer: null, inFlight: false, shownSeq: new Map(), loading: new Set(), expanded: false, pollMs: POLL_MS, size: 'auto' };
   try { const saved = localStorage.getItem(SIZE_KEY); if (['auto', 'small', 'medium', 'large', 'max'].includes(saved)) state.size = saved; } catch {}
   root.dataset.size = state.size;
   sizeSelect.value = state.size;
@@ -175,16 +193,19 @@ export function createLiveView({ root, uiLog, setIcon, isViewActive }) {
   }
 
   function applySelection() {
+    if (state.selected !== 'all' && state.retired.has(Number(state.selected))) state.selected = 'all';
     const single = state.selected !== 'all';
+    const shown = panes.children.length - state.retired.size;
     panes.classList.toggle('single', single);
-    panes.dataset.count = String(panes.children.length);
-    panes.classList.toggle('many', panes.children.length > 10);
+    panes.dataset.count = String(shown);
+    panes.classList.toggle('many', shown > 10);
     for (const button of tabs.children) {
       const active = button.dataset.liveTab === state.selected;
       button.classList.toggle('active', active);
       button.setAttribute('aria-selected', String(active));
+      button.hidden = button.dataset.liveTab !== 'all' && state.retired.has(Number(button.dataset.liveTab));
     }
-    for (const pane of panes.children) pane.hidden = single && pane.dataset.liveSlot !== state.selected;
+    for (const pane of panes.children) pane.hidden = state.retired.has(Number(pane.dataset.liveSlot)) || (single && pane.dataset.liveSlot !== state.selected);
     fitGrid();
     if (revealedSelection !== state.selected) { revealedSelection = state.selected; revealActiveTab(); }
     requestAnimationFrame(syncTabArrows);
@@ -235,6 +256,8 @@ export function createLiveView({ root, uiLog, setIcon, isViewActive }) {
 
   function renderSlots() {
     ensureStructure(state.slots.length);
+    state.retired = retiredSlots(state.slots, state.remaining);
+    const busyCount = state.slots.filter((slot) => slot.busy).length;
     state.slots.forEach((slot, index) => {
       const pane = panes.children[index];
       const tab = tabs.children[index + 1];
@@ -246,11 +269,11 @@ export function createLiveView({ root, uiLog, setIcon, isViewActive }) {
       pane.querySelector('.live-phase').textContent = slot.phaseLabel || '';
       const image = pane.querySelector('img');
       const placeholder = pane.querySelector('.live-placeholder');
-      const visible = !pane.hidden;
+      const visible = !pane.hidden && !state.retired.has(index);
       if (!slot.hasFrame) {
         clearFrame(image);
         state.shownSeq.delete(index);
-        placeholder.textContent = slot.url ? (['http', 'file'].includes(slot.phase) ? '画面を使わない方式で保存しています' : '画面を準備中') : '待機中';
+        placeholder.textContent = idlePlaceholder(slot, state.remaining, busyCount);
         placeholder.hidden = false;
         return;
       }
@@ -275,6 +298,7 @@ export function createLiveView({ root, uiLog, setIcon, isViewActive }) {
       const payload = await response.json();
       if (jobId !== state.jobId) return;
       state.slots = Array.isArray(payload.slots) ? payload.slots : [];
+      state.remaining = Number.isFinite(Number(payload.remaining)) ? Number(payload.remaining) : null;
       state.pollMs = Math.max(POLL_MS, Number(payload.pollMs) || POLL_MS);
       note.hidden = state.slots.length > 0 && !payload.streamPaused;
       note.textContent = payload.streamPaused ? STREAM_PAUSED_NOTE : payload.phase === 'discovering' ? 'サイトの構造を調べています。ページの保存が始まると、ここに画面が映ります。' : '保存の開始を待っています。';
@@ -377,6 +401,8 @@ export function createLiveView({ root, uiLog, setIcon, isViewActive }) {
         state.jobId = live.id;
         state.selected = 'all';
         state.slots = [];
+        state.remaining = null;
+        state.retired = new Set();
         ensureStructure(0);
         note.hidden = !state.enabled;
         note.textContent = '保存の開始を待っています。';

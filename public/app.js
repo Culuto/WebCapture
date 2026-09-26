@@ -238,6 +238,7 @@ function renderProgress() {
   $('#progress-region').hidden = !job;
   liveView.setJob(job);
   renderTuningStatus(job);
+  renderThrottleStatus(job);
   if (state.lastProgressJobId && !job) { loadAppSettings(); toast('保存が終わりました。結果はアーカイブ一覧で確認できます。'); uiLog('job.finished.noticed', { jobId: state.lastProgressJobId }); }
   state.lastProgressJobId = job?.id || null;
   renderPausedJobs();
@@ -1716,6 +1717,28 @@ function renderTuningStatus(job) {
   const last = tuning.lastReduction;
   const reason = last ? ({ cpu: 'CPU使用率100%', memory: 'メモリ使用率97%以上' })[last.reason] || 'ページのエラー' : '';
   line.textContent = `最適化中：同時保存 ${tuning.capture}（開始${tuning.start?.capture ?? 30}）・構造把握 ${tuning.discovery}（開始${tuning.start?.discovery ?? 64}）・下げた回数 ${tuning.reductionCount || 0}${last ? `（直近: ${reason}で${last.kind === 'capture' ? '同時保存' : '構造把握'}を${last.to}へ）` : ''}`;
+}
+
+const THROTTLE_REASONS = Object.freeze({
+  'per-host': '同じサイトへの同時アクセスの上限（分散アクセス）で順番を待っています',
+  repair: '最後の取り直しは、相手サイトへの負担を抑えるため数を減らしています',
+  balance: '残りのページを均等に分けて、最後に1件だけ残らないようにしています',
+  'low-impact': '低負荷モードで、パソコンの負荷に合わせて減らしています',
+  optimize: '最適化モードで数を調整しています'
+});
+
+function renderThrottleStatus(job) {
+  const line = $('#throttle-status');
+  const throttle = job && ['running', 'queued'].includes(job.status) ? job.throttle : null;
+  const reasons = (throttle?.reasons || []).filter((reason) => THROTTLE_REASONS[reason]);
+  line.hidden = !reasons.length;
+  if (!reasons.length) return;
+  line.replaceChildren(...[`同時保存数 ${throttle.configured} のうち、今は最大 ${throttle.limit} で保存しています。`, ...reasons.map((reason) => THROTTLE_REASONS[reason])].map((text) => {
+    const span = document.createElement('span');
+    span.className = 'throttle-reason';
+    span.textContent = text;
+    return span;
+  }));
 }
 
 function syncOptimizeSwitch(settings) {

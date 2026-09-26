@@ -1,5 +1,5 @@
 // 保存中と再生検査の両方で使う、送信を伴わない安全な操作の実行スクリプト。
-export function safeInteractionExpression({ limit = 250, settleMs = 80, deadlineMs = null, maxDepth = 3, representative = false, perGroup = 2 } = {}) {
+export function safeInteractionExpression({ limit = 250, settleMs = 80, deadlineMs = null, maxDepth = 3, representative = false, perGroup = 2, sameLabelLimit = 40 } = {}) {
   const safeLimit = limit === null || limit === Infinity ? 'Infinity' : String(Math.max(1, Number(limit) || 250));
   const prelude = [
     `const __svLimit = ${safeLimit};`,
@@ -7,7 +7,8 @@ export function safeInteractionExpression({ limit = 250, settleMs = 80, deadline
     `const __svPerGroup = ${Math.max(1, Math.trunc(Number(perGroup) || 2))};`,
     `const __svSettleMs = Math.max(0, ${Number(settleMs) || 0});`,
     `const __svDeadline = ${deadlineMs === null ? 'Infinity' : `Date.now() + ${Math.max(0, Number(deadlineMs) || 0)}`};`,
-    `const __svMaxDepth = Math.max(0, ${Math.trunc(Number(maxDepth) || 0)});`
+    `const __svMaxDepth = Math.max(0, ${Math.trunc(Number(maxDepth) || 0)});`,
+    `const __svSameLabelLimit = ${Math.max(1, Math.trunc(Number(sameLabelLimit) || 40))};`
   ].join(' ');
   return `(async () => { ${prelude}` + String.raw`
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -96,6 +97,29 @@ export function safeInteractionExpression({ limit = 250, settleMs = 80, deadline
     if (layoutVisible(layer) && layer.matches('[popover]')) { try { layer.hidePopover(); } catch {} }
   };
   const seen = new WeakSet(), queue = [], items = [];
+  const signatureCounts = new Map();
+  const labelCounts = new Map();
+  let repeatSkipped = 0;
+  const pathOf = element => {
+    const parts = [];
+    let node = element;
+    for (let step = 0; node && node.nodeType === 1 && step < 10; step += 1) {
+      const parent = node.parentElement;
+      const siblings = parent ? [...parent.children].filter(child => child.tagName === node.tagName) : [];
+      parts.push(node.tagName + (node.id ? '#' + node.id : '') + ':' + Math.max(0, siblings.indexOf(node)));
+      node = parent || node.getRootNode()?.host || null;
+    }
+    return parts.join('<');
+  };
+  const signatureOf = element => kindOf(element) + '|' + labelOf(element) + '|' + pathOf(element);
+  const repeated = element => {
+    const signature = signatureOf(element);
+    const labelKey = kindOf(element) + '|' + labelOf(element);
+    if ((signatureCounts.get(signature) || 0) >= 1 || (labelCounts.get(labelKey) || 0) >= __svSameLabelLimit) return true;
+    signatureCounts.set(signature, (signatureCounts.get(signature) || 0) + 1);
+    labelCounts.set(labelKey, (labelCounts.get(labelKey) || 0) + 1);
+    return false;
+  };
   const groupCounts = new Map();
   let representativeSkipped = 0;
   const classKey = element => [...element.classList].map(name => name.replace(/[0-9]+/g, '#')).sort().join('.');
@@ -109,6 +133,7 @@ export function safeInteractionExpression({ limit = 250, settleMs = 80, deadline
     for (const element of queryAll(CONTROLS)) {
       if (seen.has(element) || !eligible(element)) continue;
       if (depth > 0 && closeWords.test(labelOf(element))) continue;
+      if (repeated(element)) { seen.add(element); repeatSkipped += 1; continue; }
       if (__svRepresentative) {
         const group = groupOf(element);
         const used = groupCounts.get(group) || 0;
@@ -199,6 +224,7 @@ export function safeInteractionExpression({ limit = 250, settleMs = 80, deadline
       limit: Number.isFinite(limit) ? limit : null,
       representative: __svRepresentative,
       representativeSkipped,
+      repeatSkipped,
       limitReached: pendingCount > 0 || !budgetLeft() && cursor < queue.length,
       items
     };

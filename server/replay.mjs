@@ -428,6 +428,52 @@ export function findQueryVariantFallback(manifest, target) {
   return match ? { kind: 'query-variant', resource: match.resource } : null;
 }
 
+const imageVariantIndexes = new WeakMap();
+const SIZED_IMAGE_HOSTS = /(?:^|\.)(?:googleusercontent\.com|ggpht\.com)$/i;
+const YTIMG_HOSTS = /^i\d?\.ytimg\.com$/i;
+const YTIMG_PREFERENCE = ['maxresdefault', 'maxres2', 'sddefault', 'hq720', 'hqdefault', 'mqdefault', 'default'];
+
+export function imageVariantKey(value) {
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (SIZED_IMAGE_HOSTS.test(url.hostname)) {
+    const base = url.pathname.split('=')[0];
+    return base.length > 8 ? `sized:${url.hostname}${base}` : null;
+  }
+  if (YTIMG_HOSTS.test(url.hostname)) {
+    const match = url.pathname.match(/^\/(?:vi|vi_webp|an_webp)\/([A-Za-z0-9_-]{6,20})\/([A-Za-z0-9_]+)\.(?:jpg|jpeg|webp)$/);
+    return match ? `ytimg:${match[1]}` : null;
+  }
+  return null;
+}
+
+export function findImageVariantFallback(manifest, target) {
+  const key = imageVariantKey(target);
+  if (!key) return null;
+  let index = imageVariantIndexes.get(manifest);
+  if (!index) {
+    index = new Map();
+    for (const resource of Object.values(manifest.resources || {})) {
+      if (!(Number(resource.status) < 400) || !(resource.size > 0) || !resource.file) continue;
+      if (!/^image\//i.test(resource.mimeType || resource.headers?.['content-type'] || 'image/')) continue;
+      const resourceKey = imageVariantKey(resource.url);
+      if (!resourceKey) continue;
+      if (!index.has(resourceKey)) index.set(resourceKey, []);
+      index.get(resourceKey).push(resource);
+    }
+    imageVariantIndexes.set(manifest, index);
+  }
+  const candidates = index.get(key);
+  if (!candidates?.length) return null;
+  const rank = (resource) => {
+    const name = (() => { try { return new URL(resource.url).pathname.split('/').pop().replace(/\.\w+$/, ''); } catch { return ''; } })();
+    const preference = YTIMG_PREFERENCE.indexOf(name);
+    return preference >= 0 ? YTIMG_PREFERENCE.length - preference : 0;
+  };
+  const best = [...candidates].sort((a, b) => rank(b) - rank(a) || Number(b.size) - Number(a.size))[0];
+  return { kind: 'image-size-variant', resource: best };
+}
+
 export function findTypekitCompleteFontFallback(manifest, target) {
   try {
     const requested = new URL(target);
@@ -700,7 +746,7 @@ export function createReplayHandler(store, config) {
       return send(res, postStatus, { ...commonHeaders, ...archivedStatus, 'content-type': postType, 'content-length': body.length, 'x-webcapture-post-match': lookup.match }, body);
     }
     const canonicalTarget = manifest.resourceAliases?.[target] || target;
-    const fallback = manifest.resources[canonicalTarget] ? null : findTypekitCompleteFontFallback(manifest, target) || findQueryVariantFallback(manifest, canonicalTarget);
+    const fallback = manifest.resources[canonicalTarget] ? null : findTypekitCompleteFontFallback(manifest, target) || findQueryVariantFallback(manifest, canonicalTarget) || findImageVariantFallback(manifest, canonicalTarget);
     const baseResource = manifest.resources[canonicalTarget] || fallback?.resource;
     const currentPage = currentReplayPage(req, lastPages);
     const variant = baseResource && currentPage?.archiveId === archiveId

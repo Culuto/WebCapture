@@ -466,7 +466,7 @@ test('分散アクセスで同じサイトへの同時アクセスを無制限�
     res.once('finish', () => { active -= 1; });
     setTimeout(() => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(pathname === '/' ? `<title>Root</title>${[1, 2, 3, 4, 5, 6].map((n) => `<a href="/p${n}">${n}</a>`).join('')}` : `<title>${pathname}</title>`);
+      res.end(pathname === '/' ? `<title>Root</title>${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<a href="/p${n}">${n}</a>`).join('')}` : `<title>${pathname}</title>`);
     }, 300);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -478,6 +478,6 @@ test('分散アクセスで同じサイトへの同時アクセスを無制限�
   });
   await new CrawlManager(store, { defaultLimits: DEFAULT_CAPTURE_OPTIONS }).run(job.id);
   assert.equal(job.status, 'complete');
-  assert.equal(job.pages, 7);
+  assert.equal(job.pages, 9);
   assert.equal(activeMax, 4, `同時保存数まで並行して開く: ${activeMax}`);
 });

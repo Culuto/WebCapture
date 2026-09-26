@@ -1,5 +1,6 @@
 const VIEWER_TTL_MS = 5000;
 const MIN_FRAME_INTERVAL_MS = 200;
+const IDLE_PHASES = new Set(['done', 'failed', 'skipped', 'shared', 'idle']);
 const PHASE_LABELS = Object.freeze({
   waiting: '順番待ち',
   opening: 'ページを開いています',
@@ -106,10 +107,10 @@ export class LiveViewHub {
     const count = Math.max(slotCount, ...[...slots.keys()].map((index) => index + 1), 0);
     return Array.from({ length: count }, (_, index) => {
       const slot = slots.get(index);
-      if (!slot) return { index, url: '', title: '', phase: 'idle', phaseLabel: '待機中', frameSeq: 0, hasFrame: false };
+      if (!slot) return { index, url: '', title: '', phase: 'idle', phaseLabel: '待機中', frameSeq: 0, hasFrame: false, busy: false, idleMs: null };
       return {
         index, url: slot.url, title: slot.title, phase: slot.phase, phaseLabel: livePhaseLabel(slot.phase),
-        frameSeq: slot.frameSeq, hasFrame: Boolean(slot.frame)
+        frameSeq: slot.frameSeq, hasFrame: Boolean(slot.frame), busy: !IDLE_PHASES.has(slot.phase), idleMs: Math.max(0, this.now() - slot.updatedAt)
       };
     });
   }

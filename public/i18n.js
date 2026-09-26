@@ -537,6 +537,12 @@ export const EN = Object.freeze({
   "表示中のページの書き出し形式": "Export format for the page shown",
   "画像（PNG）": "Image (PNG)",
   "変化なし": "No change",
+  "完了済み": "Done",
+  "同じサイトへの同時アクセスの上限（分散アクセス）で順番を待っています": "Waiting for the per-site limit (distributed access)",
+  "最後の取り直しは、相手サイトへの負担を抑えるため数を減らしています": "The final retry uses fewer pages to go easy on the site",
+  "残りのページを均等に分けて、最後に1件だけ残らないようにしています": "Remaining pages are split evenly so that no single page is left running alone",
+  "低負荷モードで、パソコンの負荷に合わせて減らしています": "Reduced to match the PC load (low-impact mode)",
+  "最適化モードで数を調整しています": "Adjusting the number in optimize mode",
   "繰り返しの間隔は「毎時」「毎日」「毎週」から選んでください。": "Choose Hourly, Daily, or Weekly as the interval.",
   "保存済みサイトが見つかりません。": "The saved site was not found.",
   "定期保存の予定が見つかりません。": "The scheduled save was not found.",
@@ -710,6 +716,7 @@ export const EN = Object.freeze({
 });
 
 const PATTERNS = Object.freeze([
+  [/^同時保存数 (\d+) のうち、今は最大 (\d+) で保存しています。$/, (m) => `Saving up to ${m[2]} of ${m[1]} parallel pages right now.`],
   [/^書き出しに失敗しました: (.+)$/, (m, lookup) => `Export failed: ${lookup(m[1]) || m[1]}`],
   [/^毎時(\d+)分に保存します。$/, (m) => `Saves every hour at minute ${m[1]}.`],
   [/^毎日 (\d{2}:\d{2})に保存します。$/, (m) => `Saves every day at ${m[1]}.`],

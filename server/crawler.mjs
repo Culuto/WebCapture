@@ -30,6 +30,13 @@ export function captureOptionsForScope(options, scope) {
 }
 const RETRYABLE_ERROR_CODES = new Set(['BROWSER_UNAVAILABLE', 'PAGE_NAVIGATION_FAILED', 'PAGE_CAPTURE_TIMEOUT', 'PAGE_STALLED', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT']);
 
+export function balancedConcurrency(pending, limit) {
+  const cap = Math.max(1, Math.trunc(Number(limit) || 1));
+  const total = Math.max(0, Math.trunc(Number(pending) || 0));
+  if (total <= cap) return cap;
+  return Math.max(1, Math.ceil(total / Math.ceil(total / cap)));
+}
+
 export function retryableDocumentStatus(status) {
   const value = Number(status) || 0;
   return value === 408 || value === 425 || value === 429 || value >= 500;
@@ -1727,7 +1734,7 @@ export class CrawlManager {
     const hostLastStart = new Map();
     const hostKeyOf = (value) => { try { return registrableDomain(new URL(value).hostname); } catch { return ''; } };
     const hostReadyAt = (key) => {
-      if ((!distributed && !repairPhase) || !key) return 0;
+      if (!distributed || !key) return 0;
       if ((hostActive.get(key) || 0) >= (repairPhase ? 1 : perHostLimit)) return Infinity;
       return (hostLastStart.get(key) || 0) + (repairPhase ? Math.max(2000, perHostIntervalMs) : perHostIntervalMs);
     };
@@ -1773,10 +1780,13 @@ export class CrawlManager {
       }
       return null;
     };
+    let lastThrottleKey = '';
     const launch = () => exclusive(async () => {
       let latest = null;
-      const poolLimit = repairPhase ? Math.min(3, concurrencyLimit) : concurrencyLimit;
-      while (!warningHit && !limitHit && !fatalError && job.status === 'running' && active.size < (tuner ? Math.min(poolLimit, tuner.capture) : poolLimit)) {
+      const poolLimit = repairPhase ? Math.min(concurrencyLimit, Math.max(3, Math.ceil(concurrencyLimit / 2))) : concurrencyLimit;
+      const tunedLimit = tuner ? Math.min(poolLimit, tuner.capture) : poolLimit;
+      const launchLimit = repairPhase ? tunedLimit : balancedConcurrency(active.size + job.queue.length, tunedLimit);
+      while (!warningHit && !limitHit && !fatalError && job.status === 'running' && active.size < launchLimit) {
         if (reached(job.pages, job.options.maxPages) || reached(job.bytes, job.options.maxBytes) || reached(Date.now() - started, job.options.maxDurationMs)) {
           limitHit = true;
           break;
@@ -1803,8 +1813,27 @@ export class CrawlManager {
         active.add(task);
         latest = item;
       }
+      const governorLimit = this.loadGovernor.capture.limit;
+      const waitingOnHost = distributed && active.size < launchLimit && job.queue.length > 0;
+      const throttle = {
+        configured: concurrencyLimit, limit: Math.min(launchLimit, governorLimit), running: active.size,
+        reasons: [
+          ...(repairPhase && poolLimit < concurrencyLimit ? ['repair'] : []),
+          ...(tuner && tuner.capture < poolLimit ? ['optimize'] : []),
+          ...(!repairPhase && launchLimit < tunedLimit ? ['balance'] : []),
+          ...(governorLimit < launchLimit ? ['low-impact'] : []),
+          ...(waitingOnHost ? ['per-host'] : [])
+        ]
+      };
+      const throttleKey = JSON.stringify({ ...throttle, running: undefined });
+      if (throttleKey !== lastThrottleKey) {
+        lastThrottleKey = throttleKey;
+        job.throttle = throttle;
+        if (!latest) await this.store.updateJob(id, { throttle });
+      }
       if (latest) {
         await this.store.updateJob(id, {
+          throttle: job.throttle,
           inFlight: job.inFlight, currentUrl: latest.normalized,
           depth: Math.max(...job.inFlight.map((item) => item.depth || 0)),
           message: active.size > 1 ? `${active.size}ページを並列保存中` : 'ページを保存中'

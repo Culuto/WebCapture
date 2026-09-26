@@ -103,3 +103,5 @@
 :root[data-theme="dark"] #organize-form textarea,
 :root[data-theme="dark"] #batch-urls { background: var(--dark-input); border-color: var(--dark-input-border); color: var(--dark-text); }
 .export-row:has(#page-export-format) { grid-template-columns: minmax(104px, 1fr) auto; }
+#throttle-status { display: grid; gap: 2px; }
+#throttle-status .throttle-reason:first-child { font-weight: 600; }

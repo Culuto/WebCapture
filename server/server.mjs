@@ -471,6 +471,7 @@ async function api(req, res, url) {
       crawler.liveView.touchViewer(id);
       return json(res, 200, {
         ok: true, jobId: id, status: job.status, phase: job.phase || '', pollMs: crawler.liveView.pollMs(), streamPaused: crawler.liveView.streamPaused(),
+        remaining: Number(job.terminalQueue ? job.queueCount || 0 : job.queue?.length || 0) + Number(job.inFlight?.length || 0),
         slots: crawler.liveView.snapshot(id, ['running', 'queued'].includes(job.status) ? Math.max(1, crawler.tuningSnapshot(id)?.capture ?? (Number(job.options?.concurrency) || 1)) : 0)
       });
     }
