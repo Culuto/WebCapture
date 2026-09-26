@@ -329,6 +329,11 @@ export const EN = Object.freeze({
   "上限停止": "Stopped at limit",
   "アクセス確認で停止": "Stopped by access check",
   "ログインが必要": "Login required",
+  "ブラウザを起動できない": "Browser could not start",
+  "保存に使うブラウザ（Chrome・Edge）が起動直後に終了したため、ページを開けませんでした。": "The browser used for saving (Chrome or Edge) exited right after starting, so the page could not be opened.",
+  "Chromeを更新して再起動するか、パソコンを再起動してから取り直すと保存できる場合があります。": "Updating and restarting Chrome, or restarting the PC, and then retrying may save it.",
+  "Chromeの更新が途中で止まっている可能性があります。Chromeを開いて「設定」→「Chromeについて」で更新を完了し、Chromeを再起動してから保存し直してください。": "A Chrome update may be stuck halfway. Open Chrome, finish the update under Settings > About Chrome, restart Chrome, and save again.",
+  "ChromeまたはEdgeを一度開いて正常に動くか確認し、パソコンを再起動してから保存し直してください。": "Open Chrome or Edge once to check that it works, restart the PC, and save again.",
   "未判定": "Not rated",
   "良好": "Good",
   "おおむね良好": "Mostly good",
@@ -717,6 +722,7 @@ export const EN = Object.freeze({
 
 const PATTERNS = Object.freeze([
   [/^同時保存数 (\d+) のうち、今は最大 (\d+) で保存しています。$/, (m) => `Saving up to ${m[2]} of ${m[1]} parallel pages right now.`],
+  [/^(保存できたページがありません。)?ブラウザ（([^）]*)）を起動できませんでした。(.+)$/, (m, lookup) => `${m[1] ? 'No pages could be saved. ' : ''}The browser (${m[2].replaceAll('・', ', ')}) could not start. ${lookup(m[3]) || m[3]}`],
   [/^書き出しに失敗しました: (.+)$/, (m, lookup) => `Export failed: ${lookup(m[1]) || m[1]}`],
   [/^毎時(\d+)分に保存します。$/, (m) => `Saves every hour at minute ${m[1]}.`],
   [/^毎日 (\d{2}:\d{2})に保存します。$/, (m) => `Saves every day at ${m[1]}.`],

@@ -43,6 +43,12 @@ const CATEGORIES = [
     advice: '必要なら外部リンクの深さや除外設定を変えます。'
   },
   {
+    key: 'browser', label: 'ブラウザを起動できない', severity: 'warn',
+    explanation: '保存に使うブラウザ（Chrome・Edge）が起動直後に終了したため、ページを開けませんでした。',
+    advice: 'Chromeを更新して再起動するか、パソコンを再起動してから取り直すと保存できる場合があります。',
+    action: 'retry', actionLabel: '取り直す'
+  },
+  {
     key: 'other', label: 'その他', severity: 'warn',
     explanation: '上のどれにも当てはまらない問題。',
     advice: '詳細の理由を確認します。'
@@ -50,6 +56,8 @@ const CATEGORIES = [
 ];
 
 const OUT_OF_SCOPE = /取得深度上限|転送先が保存範囲外|保存対象外|自動で除外|除外パターン|robots\.txt|外部サイトのため保存しません|ログイン誘導先は保存済み|転送先は保存済み/;
+
+const BROWSER_START = /ブラウザ（[^）]*）を起動できませんでした|ブラウザがキャプチャ開始前に終了|ブラウザのキャプチャ接続がタイムアウト/;
 
 export const RETRY_ACTION_OPTIONS = Object.freeze({
   retry: {},
@@ -68,6 +76,7 @@ function safePath(value) {
 function categoryOf(item) {
   const reason = String(item.reason || '');
   if (OUT_OF_SCOPE.test(reason)) return 'outOfScope';
+  if (BROWSER_START.test(reason)) return 'browser';
   if (isServerBoundaryUrl(item.url) || isAccountLikeUrl(item.url) || /\/(?:login|signin|authorize|oauth)(?:[_/-]|$)/i.test(safePath(item.url)) || /ログイン/.test(reason)) return 'login';
   if (/HTTP (?:404|410)\b/.test(reason)) return 'originMissing';
   if (/HTTP (?:401|403|429)\b|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_BLOCKED_BY_RESPONSE|アクセス確認|Bot/i.test(reason)) return 'refused';
@@ -93,7 +102,7 @@ export function buildIssueReport(manifest = {}) {
     if (!item?.url) continue;
     const key = categoryOf(item);
     const isFailure = unresolved.has(`${item.url}|${item.reason}`) || /^ページを開けませんでした|ページの保存|保存を完了|HTTP \d{3}/.test(item.reason || '');
-    if (key === 'outOfScope' || isFailure || key === 'login') add(key, item.url, item.reason);
+    if (key === 'outOfScope' || isFailure || key === 'login' || key === 'browser') add(key, item.url, item.reason);
   }
   for (const page of manifest.pages || []) {
     const quality = page.quality;

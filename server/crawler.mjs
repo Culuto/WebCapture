@@ -2003,7 +2003,7 @@ export class CrawlManager {
       logEvent('info', 'archive', 'created', { archiveId: archive.id, jobId: id, status: archive.status, pages: archive.pages, resources: archive.resources, bytes: archive.bytes });
       if (finalStatus !== 'cancelled') {
         const report = buildIssueReport(manifest);
-        Promise.resolve(this.config.onJobFinished?.({ jobId: id, archiveId: archive.id, startUrl: job.startUrl, title: archive.title, status: finalStatus, pages: archive.pages, problemCount: report.problemCount })).catch(() => {});
+        Promise.resolve(this.config.onJobFinished?.({ jobId: id, archiveId: archive.id, startUrl: job.startUrl, title: archive.title, status: finalStatus, pages: archive.pages, problemCount: report.problemCount, message: this.store.getJob(id)?.message || '' })).catch(() => {});
       }
     } else if (['paused', 'warning'].includes(finalStatus)) {
       await this.publishInterruptedArchive(id, manifest);

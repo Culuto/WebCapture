@@ -766,7 +766,8 @@ try {
       let host = result.startUrl;
       try { host = new URL(result.startUrl).hostname; } catch {}
       const label = ({ complete: '保存が完了', 'complete-with-errors': '保存が完了（一部エラー）', 'limit-reached': '上限に達して停止', failed: '保存に失敗', blocked: 'アクセス確認で停止', 'login-required': 'ログインが必要' })[result.status] || '保存が終了';
-      await notifyDesktop(`WebCapture: ${label}`, `${host} を ${result.pages}ページ保存しました。保存できなかったもの ${result.problemCount}件。`);
+      const detail = result.status === 'failed' && !result.pages && result.message ? result.message : `${host} を ${result.pages}ページ保存しました。保存できなかったもの ${result.problemCount}件。`;
+      await notifyDesktop(`WebCapture: ${label}`, detail);
     },
     onTuningResult: async (result) => {
       appSettings = { ...appSettings, optimized: result };
