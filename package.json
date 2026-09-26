@@ -10,6 +10,7 @@
     "start": "node server/server.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test --test-concurrency=1 Test/*.test.mjs",
+    "diagnose:browser": "node scripts/diagnose-browser.mjs",
     "audit:archive": "node scripts/audit-archive.mjs",
     "repair:srcset": "node scripts/repair-archive-srcset.mjs",
     "appdetail:sync": "node scripts/sync-appdetail.mjs",
